@@ -1,13 +1,8 @@
 # HireFlow — AI-Powered Hiring Platform
 
-> Built during a 3-Day Backend + AI Engineering Bootcamp
-
----
-
 ## What is HireFlow?
 
-HireFlow is a hiring platform where recruiters post jobs and candidates apply with their resumes. The backend is production-grade — built with FastAPI, PostgreSQL, JWT auth, and file uploads. Days 2 and 3 will add AI resume screening and autonomous agents.
-
+HireFlow is a hiring platform where recruiters post jobs and candidates apply with their resumes. The backend is production-grade — built with FastAPI, PostgreSQL, JWT auth, and file uploads. 
 ---
 
 ## Tech Stack
@@ -186,31 +181,3 @@ Protected Request:
 - Resume files named with **UUID** to prevent collisions and path traversal
 
 ---
-
-## Bootcamp Progress
-
-| Day | Topic | Status |
-|-----|-------|--------|
-| Day 1 | Backend Engineering | ✅ Complete |
-| Day 2 | AI Engineering | 🔄 Coming up |
-| Day 3 | AI Agents | ⏳ Pending |
-
----
-
-## What's Coming (Day 2 & 3)
-
-**Day 2 — AI Engineering**
-- LLM integration for resume analysis
-- Embeddings for candidate-job matching
-- RAG over job descriptions
-- Smart candidate scoring
-
-**Day 3 — AI Agents**
-- Autonomous screening agent
-- Multi-agent pipeline
-- Auto-follow up with candidates
-- Anomaly detection on applications
-
----
-
-*Built with 🔥 during the HireFlow Bootcamp*

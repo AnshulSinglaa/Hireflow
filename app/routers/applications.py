@@ -4,6 +4,8 @@ from app.database import get_db
 from app import models, schemas
 from app.auth import get_current_user
 import uuid, os
+from app.ai.parser import parse_resume
+import json
 
 router = APIRouter(tags=["Applications"])
 
@@ -54,4 +56,31 @@ async def apply_to_job(
     db.add(application)
     db.commit()
     db.refresh(application)
+
+    # Parse resume with AI
+    print(f"Parsing resume from: {file_path}")
+    try:
+        parsed = parse_resume(file_path)
+        print(f"Parsed result: {parsed}")
+    except Exception as e:
+        print(f"PARSER ERROR: {e}")
+        parsed = {"error": str(e)}
+    application.parsed_resume = json.dumps(parsed)
+    db.commit()
+
     return application
+
+@router.get("/applications/{application_id}/parsed")
+def get_parsed_resume(
+    application_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    application = db.query(models.Application).filter(
+        models.Application.id == application_id
+    ).first()
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+    if not application.parsed_resume:
+        raise HTTPException(status_code=404, detail="Resume not parsed yet")
+    return json.loads(application.parsed_resume)

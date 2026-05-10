@@ -29,4 +29,5 @@ class Application(Base):
     candidate_id = Column(Integer, ForeignKey("users.id"))
     status = Column(String, default="pending")
     resume_path = Column(String, nullable=True)
+    parsed_resume = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)

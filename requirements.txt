@@ -12,3 +12,7 @@ alembic
 passlib[bcrypt]
 python-jose[cryptography]
 python-multipart
+
+# AI
+groq
+pypdf2

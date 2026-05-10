@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app import models, schemas
 from app.auth import get_current_user
+from app.ai.matcher import match_candidates
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 
@@ -74,3 +75,24 @@ def get_job_applications(
 
     applications = db.query(models.Application).filter(models.Application.job_id == job_id).all()
     return applications
+
+
+@router.get("/{job_id}/match")
+def match_job_candidates(
+    job_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    if current_user.role != "recruiter":
+        raise HTTPException(status_code=403, detail="Only recruiters can access matches")
+
+    job = db.query(models.Job).filter(models.Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to see matches for this job")
+
+    results = match_candidates(job_id, db)
+    return results
+

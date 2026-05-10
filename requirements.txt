@@ -16,3 +16,4 @@ python-multipart
 # AI
 groq
 pypdf2
+sentence-transformers

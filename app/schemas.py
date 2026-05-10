@@ -20,6 +20,9 @@ class Token(BaseModel):
 
 # ── Jobs ──────────────────────────────────────────────────────────────────────
 
+class RecruiterQuestion(BaseModel):
+    question: str
+
 class JobCreate(BaseModel):
     title: str
     description: str

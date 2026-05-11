@@ -5,6 +5,7 @@ from app import models, schemas
 from app.auth import get_current_user
 from app.ai.matcher import match_candidates
 from app.ai.rag import ask_about_candidates
+from app.agents.screening_agent import run_screening_agent
 
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 
@@ -118,3 +119,21 @@ def ask_job_candidates(
     return {"answer": result}
 
 
+@router.post("/{job_id}/screen")
+def screen_job_candidates(
+    job_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    if current_user.role != "recruiter":
+        raise HTTPException(status_code=403, detail="Only recruiters can run screening")
+
+    job = db.query(models.Job).filter(models.Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to screen candidates for this job")
+
+    result = run_screening_agent(job_id, db)
+    return result

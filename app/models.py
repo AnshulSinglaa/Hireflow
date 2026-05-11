@@ -31,3 +31,12 @@ class Application(Base):
     resume_path = Column(String, nullable=True)
     parsed_resume = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class AgentMemory(Base):
+    __tablename__ = "agent_memory"
+
+    id = Column(Integer, primary_key=True)
+    job_id = Column(Integer, ForeignKey("jobs.id"))
+    memory_type = Column(String, nullable=False)
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)

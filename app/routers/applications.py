@@ -5,6 +5,7 @@ from app import models, schemas
 from app.auth import get_current_user
 import uuid, os
 from app.ai.parser import parse_resume
+from app.ai.scorer import score_candidate
 import json
 
 router = APIRouter(tags=["Applications"])
@@ -84,3 +85,11 @@ def get_parsed_resume(
     if not application.parsed_resume:
         raise HTTPException(status_code=404, detail="Resume not parsed yet")
     return json.loads(application.parsed_resume)
+
+@router.get("/applications/{application_id}/score")
+def get_candidate_score(
+    application_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    return score_candidate(application_id, db)

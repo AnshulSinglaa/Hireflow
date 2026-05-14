@@ -4,6 +4,7 @@ from groq import Groq
 from sqlalchemy.orm import Session
 from app import models
 from app.ai.scorer import score_candidate
+from app.agents.guardrails import AgentGuardrails
 
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
@@ -141,7 +142,7 @@ Return ONLY a JSON object, no markdown, no backticks:
 # ─────────────────────────────────────────
 # AGENT 4 — EMAIL AGENT
 # ─────────────────────────────────────────
-def run_email_agent(pipeline_output: dict, db: Session) -> dict:
+def run_email_agent(pipeline_output: dict, db: Session, guardrails: AgentGuardrails) -> dict:
     print("\n[EMAIL AGENT] Starting...")
     
     job = pipeline_output["job"]
@@ -189,8 +190,14 @@ Return ONLY the email body, no subject line."""
             models.Application.id == app_id
         ).first()
         if application:
-            application.status = "shortlisted"
-            db.commit()
+            # Before updating status
+            if guardrails.before_action("update_status", {
+                "application_id": app_id,
+                "new_status": "shortlisted"
+            }):
+                application.status = "shortlisted"
+                db.commit()
+            guardrails.after_action("update_status")
 
         emails_sent.append({
             "type": "shortlist",
@@ -235,8 +242,14 @@ Return ONLY the email body, no subject line."""
             models.Application.id == candidate["application_id"]
         ).first()
         if application:
-            application.status = "rejected"
-            db.commit()
+            # Before updating status
+            if guardrails.before_action("update_status", {
+                "application_id": candidate["application_id"],
+                "new_status": "rejected"
+            }):
+                application.status = "rejected"
+                db.commit()
+            guardrails.after_action("update_status")
 
         emails_sent.append({
             "type": "rejection",
@@ -312,10 +325,14 @@ health_score is 0-100: how healthy is this hiring pipeline?"""
 # ─────────────────────────────────────────
 # COORDINATOR — runs the full pipeline
 # ─────────────────────────────────────────
-def run_full_pipeline(job_id: int, db: Session) -> dict:
+def run_full_pipeline(job_id: int, db: Session, dry_run: bool = False) -> dict:
     print(f"\n{'='*50}")
     print(f"🚀 HIREFLOW PIPELINE STARTING — Job {job_id}")
+    if dry_run:
+        print(f"⚠️  DRY RUN MODE — no real actions will be taken")
     print(f"{'='*50}")
+
+    guardrails = AgentGuardrails(dry_run=dry_run, require_approval=False)
 
     # Step 1 — Screen
     screener_output = run_screener_agent(job_id, db)
@@ -331,7 +348,7 @@ def run_full_pipeline(job_id: int, db: Session) -> dict:
     pipeline_output = run_interview_agent(scorer_output, db)
 
     # Step 4 — Prepare emails
-    emails = run_email_agent(pipeline_output, db)
+    emails = run_email_agent(pipeline_output, db, guardrails)
 
     # Step 5 — Optimize JD
     jd_analysis = run_jd_optimizer(scorer_output, db)
@@ -354,5 +371,6 @@ def run_full_pipeline(job_id: int, db: Session) -> dict:
         "interview_kits": pipeline_output["interview_kits"],
         "emails": emails,
         "jd_analysis": jd_analysis,
-        "scores": scorer_output["all_scores"]
+        "scores": scorer_output["all_scores"],
+        "guardrail_report": guardrails.get_report()
     }

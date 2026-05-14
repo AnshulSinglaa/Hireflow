@@ -156,3 +156,22 @@ def run_job_pipeline(
 
     result = run_full_pipeline(job_id, db)
     return result
+
+@router.post("/{job_id}/pipeline/dry-run")
+def run_job_pipeline_dry_run(
+    job_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    if current_user.role != "recruiter":
+        raise HTTPException(status_code=403, detail="Only recruiters can run the pipeline")
+
+    job = db.query(models.Job).filter(models.Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to run pipeline for this job")
+
+    result = run_full_pipeline(job_id, db, dry_run=True)
+    return result

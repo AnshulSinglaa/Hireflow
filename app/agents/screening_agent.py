@@ -123,6 +123,7 @@ def run_screening_agent(job_id: int, db: Session) -> dict:
 
     # Load previous memories
     previous_memories = load_memory(job_id, db)
+    print(f"   [MEMORY] Loaded {len(previous_memories)} previous memories")  # ADD THIS
     memory_context = ""
     if previous_memories:
         memory_context = "\n\n## Your Previous Actions on This Job\n"

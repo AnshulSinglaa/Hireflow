@@ -35,7 +35,11 @@ The JSON must have exactly these fields:
 Resume text:
 {resume_text[:3000]}"""
 
-    response = client.chat.completions.create(
+    from app.observability import tracked_llm_call
+
+    response = tracked_llm_call(
+        client,
+        endpoint="parser",
         model="llama-3.3-70b-versatile",
         messages=[
             {"role": "user", "content": prompt}

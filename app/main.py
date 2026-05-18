@@ -50,3 +50,10 @@ def read_root():
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+@app.get("/observability")
+def get_observability():
+    return {
+        "message": "Check uvicorn terminal for LLM_CALL logs",
+        "tip": "Each log shows latency, tokens, and cost per call"
+    }

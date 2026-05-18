@@ -60,7 +60,11 @@ Description: {job.description}
 
 Answer:"""
 
-    response = client.chat.completions.create(
+    from app.observability import tracked_llm_call
+
+    response = tracked_llm_call(
+        client,
+        endpoint="rag",
         model="llama-3.3-70b-versatile",
         messages=[
             {"role": "user", "content": prompt}

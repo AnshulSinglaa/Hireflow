@@ -72,7 +72,11 @@ Return ONLY a JSON object with NO extra text, no markdown, no backticks:
 
 Calculate total_score as weighted average: skills_match(40%) + experience_match(30%) + education_match(15%) + overall_fit(15%)"""
 
-    response = client.chat.completions.create(
+    from app.observability import tracked_llm_call
+
+    response = tracked_llm_call(
+        client,
+        endpoint="score_candidate",
         model="llama-3.3-70b-versatile",
         messages=[{"role": "user", "content": prompt}],
         temperature=0,

@@ -1,6 +1,11 @@
 from pydantic import BaseModel
 from datetime import datetime
 
+class UserLogin(BaseModel):
+    email: str
+    password: str
+    role: str | None = None  # not needed for auth, kept for compat
+
 class UserCreate(BaseModel):
     email: str
     password: str

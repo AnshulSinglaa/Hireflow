@@ -2,3 +2,6 @@ __pycache__
 *.pyc
 .env
 uploads/
+.git
+mcp_config.json
+evals/

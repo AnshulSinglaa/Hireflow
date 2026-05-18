@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app import models, schemas
@@ -117,6 +118,34 @@ def ask_job_candidates(
 
     result = ask_about_candidates(job_id, question.question, db)
     return {"answer": result}
+
+
+@router.post("/{job_id}/ask/stream")
+async def ask_stream(
+    job_id: int,
+    question: schemas.RecruiterQuestion,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    if current_user.role != "recruiter":
+        raise HTTPException(status_code=403, detail="Only recruiters can ask questions")
+    
+    job = db.query(models.Job).filter(models.Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    if job.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    def generate():
+        result = ask_about_candidates(job_id, question.question, db)
+        words = result.split(' ')
+        for word in words:
+            yield word + ' '
+            import time
+            time.sleep(0.05)
+
+    return StreamingResponse(generate(), media_type="text/plain")
 
 
 @router.post("/{job_id}/screen")

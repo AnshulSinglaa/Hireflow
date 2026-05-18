@@ -8,6 +8,10 @@ export default function Dashboard() {
   const [pipelineResult, setPipelineResult] = useState(null)
   const [pipelineLoading, setPipelineLoading] = useState(false)
   const [newJob, setNewJob] = useState({ title: '', description: '', company: '' })
+  const [question, setQuestion] = useState('')
+  const [answer, setAnswer] = useState('')
+  const [askLoading, setAskLoading] = useState(false)
+  const [selectedJob, setSelectedJob] = useState(null)
   const navigate = useNavigate()
   const token = localStorage.getItem('token')
 
@@ -57,6 +61,39 @@ export default function Dashboard() {
       alert(err.response?.data?.detail || 'Pipeline failed')
     } finally {
       setPipelineLoading(false)
+    }
+  }
+
+  const askQuestion = async () => {
+    if (!question || !selectedJob) return
+    setAskLoading(true)
+    setAnswer('')
+    
+    try {
+      const res = await fetch(
+        `http://127.0.0.1:8000/jobs/${selectedJob}/ask/stream`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ question })
+        }
+      )
+      
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        setAnswer(prev => prev + decoder.decode(value))
+      }
+    } catch (err) {
+      setAnswer('Failed to get answer')
+    } finally {
+      setAskLoading(false)
     }
   }
 
@@ -186,6 +223,43 @@ export default function Dashboard() {
           )}
         </div>
       )}
+
+      {/* RAG Assistant */}
+      <div className="bg-white rounded-xl shadow-sm p-6 border mt-8">
+        <h2 className="text-lg font-semibold mb-4">🤖 AI Recruiting Assistant</h2>
+        <select
+          value={selectedJob || ''}
+          onChange={e => setSelectedJob(e.target.value)}
+          className="w-full px-3 py-2 border rounded-lg mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          <option value="">Select a job...</option>
+          {jobs.map(job => (
+            <option key={job.id} value={job.id}>{job.title}</option>
+          ))}
+        </select>
+        <div className="flex gap-2 mb-4">
+          <input
+            value={question}
+            onChange={e => setQuestion(e.target.value)}
+            placeholder="Ask about candidates..."
+            className="flex-1 px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            onKeyDown={e => e.key === 'Enter' && askQuestion()}
+          />
+          <button
+            onClick={askQuestion}
+            disabled={askLoading}
+            className="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 disabled:opacity-50"
+          >
+            {askLoading ? '...' : 'Ask'}
+          </button>
+        </div>
+        {answer && (
+          <div className="bg-gray-50 rounded-lg p-4 text-sm text-gray-700 whitespace-pre-wrap">
+            {answer}
+            {askLoading && <span className="animate-pulse">▊</span>}
+          </div>
+        )}
+      </div>
     </div>
   )
 }

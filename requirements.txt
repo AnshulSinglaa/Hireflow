@@ -19,3 +19,5 @@ pypdf2
 sentence-transformers
 google-generativeai
 mcp
+slowapi
+

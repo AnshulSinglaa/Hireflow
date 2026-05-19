@@ -7,7 +7,12 @@ from fastapi.middleware.cors import CORSMiddleware
 import logging
 from app.database import engine
 from app import models
-from app.routers import auth, jobs, applications
+
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+from app.routers import auth, jobs, applications, tasks
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -15,6 +20,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="HireFlow API", version="0.1.0")
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,6 +51,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 app.include_router(auth.router)
 app.include_router(jobs.router)
 app.include_router(applications.router)
+app.include_router(tasks.router)
 
 @app.get("/")
 def read_root():

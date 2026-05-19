@@ -85,7 +85,12 @@ Calculate total_score as weighted average: skills_match(40%) + experience_match(
 
     raw = response.choices[0].message.content.strip()
 
+    from app.schemas_ai import CandidateScore
+
     try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return {"raw_response": raw, "error": "Could not parse JSON"}
+        data = json.loads(raw)
+        # Validate with Pydantic
+        validated = CandidateScore(**data)
+        return validated.model_dump()
+    except Exception as e:
+        return {"error": f"Validation failed: {str(e)}", "raw": raw}

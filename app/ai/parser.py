@@ -50,7 +50,11 @@ Resume text:
 
     raw = response.choices[0].message.content.strip()
 
+    from app.schemas_ai import ParsedResume
+
     try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return {"raw_response": raw, "error": "Could not parse JSON"}
+        data = json.loads(raw)
+        validated = ParsedResume(**data)
+        return validated.model_dump()
+    except Exception as e:
+        return {"error": f"Validation failed: {str(e)}"}

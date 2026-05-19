@@ -40,3 +40,13 @@ class AgentMemory(Base):
     memory_type = Column(String, nullable=False)
     content = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class TaskStatus(Base):
+    __tablename__ = "tasks"
+
+    id = Column(String, primary_key=True)
+    status = Column(String, default="pending")
+    result = Column(Text, nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)

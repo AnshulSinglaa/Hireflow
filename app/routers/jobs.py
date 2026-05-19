@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from app.database import get_db
@@ -8,6 +8,8 @@ from app.ai.matcher import match_candidates
 from app.ai.rag import ask_about_candidates
 from app.agents.screening_agent import run_screening_agent
 from app.agents.pipeline import run_full_pipeline
+from app.routers.tasks import run_pipeline_task
+import uuid
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 
 
@@ -204,3 +206,32 @@ def run_job_pipeline_dry_run(
 
     result = run_full_pipeline(job_id, db, dry_run=True)
     return result
+
+@router.post("/{job_id}/pipeline/async")
+def run_pipeline_async(
+    job_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    if current_user.role != "recruiter":
+        raise HTTPException(status_code=403, detail="Only recruiters")
+    
+    job = db.query(models.Job).filter(models.Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    task_id = str(uuid.uuid4())
+    task = models.TaskStatus(id=task_id, status="pending")
+    db.add(task)
+    db.commit()
+
+    background_tasks.add_task(run_pipeline_task, task_id, job_id, db)
+
+    return {
+        "task_id": task_id,
+        "status": "pending",
+        "message": f"Pipeline started. Poll GET /tasks/{task_id} for results"
+    }

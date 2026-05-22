@@ -1,0 +1,3 @@
+-- DEFERRED: run when you install pgvector on PostgreSQL 18 (not used yet).
+-- CREATE EXTENSION IF NOT EXISTS vector;
+-- ALTER TABLE applications ADD COLUMN IF NOT EXISTS embedding vector(384);

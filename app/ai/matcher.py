@@ -4,15 +4,18 @@ from sentence_transformers import SentenceTransformer
 from sqlalchemy.orm import Session
 from app import models
 
-model = SentenceTransformer('all-MiniLM-L6-v2')
+model = SentenceTransformer("all-MiniLM-L6-v2")
+
 
 def get_embedding(text: str) -> list:
     return model.encode(text).tolist()
+
 
 def cosine_similarity(vec1: list, vec2: list) -> float:
     a = np.array(vec1)
     b = np.array(vec2)
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+
 
 def match_candidates(job_id: int, db: Session) -> list:
     job = db.query(models.Job).filter(models.Job.id == job_id).first()
@@ -24,7 +27,7 @@ def match_candidates(job_id: int, db: Session) -> list:
 
     applications = db.query(models.Application).filter(
         models.Application.job_id == job_id,
-        models.Application.parsed_resume != None
+        models.Application.parsed_resume != None,
     ).all()
 
     results = []

@@ -21,3 +21,8 @@ google-generativeai
 mcp
 slowapi
 
+# Scripts / bulk testing
+pandas
+requests
+fpdf2
+

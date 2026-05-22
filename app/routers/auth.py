@@ -3,12 +3,12 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app import models, schemas
 from app.auth import hash_password, verify_password, create_access_token
-from app.main import limiter
+from app.limiter import limiter, rate_limit
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 @router.post("/register", response_model=schemas.UserResponse, status_code=201)
-@limiter.limit("3/minute")
+@rate_limit("3/minute")
 def register(request: Request, user: schemas.UserCreate, db: Session = Depends(get_db)):
     existing = db.query(models.User).filter(models.User.email == user.email).first()
     if existing:
@@ -24,7 +24,7 @@ def register(request: Request, user: schemas.UserCreate, db: Session = Depends(g
     return new_user
 
 @router.post("/login")
-@limiter.limit("5/minute")
+@rate_limit("5/minute")
 def login(request: Request, user: schemas.UserLogin, db: Session = Depends(get_db)):
     db_user = db.query(models.User).filter(models.User.email == user.email).first()
     if not db_user or not verify_password(user.password, db_user.hashed_password):

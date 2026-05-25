@@ -23,3 +23,11 @@ env/
 
 # VS Code
 .vscode/
+
+# Large dataset (local only)
+Resume/Resume.csv
+
+# Bulk test artifacts
+scripts/temp_resume_*.pdf
+scripts/_test.pdf
+curl

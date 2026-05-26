@@ -3,6 +3,7 @@ import os
 from groq import Groq
 from sqlalchemy.orm import Session
 from app import models
+from app.ai.parser import clean_placeholder_name
 
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
@@ -20,6 +21,13 @@ def score_candidate(application_id: int, db: Session) -> dict:
     parsed = json.loads(application.parsed_resume)
     if "error" in parsed:
         return {"error": "Resume parsing failed"}
+
+    candidate_user = db.query(models.User).filter(
+        models.User.id == application.candidate_id
+    ).first()
+    candidate_email = candidate_user.email if candidate_user else None
+
+    parsed["name"] = clean_placeholder_name(parsed.get("name"), candidate_email)
 
     job = db.query(models.Job).filter(
         models.Job.id == application.job_id
@@ -91,6 +99,8 @@ Calculate total_score as weighted average: skills_match(40%) + experience_match(
         data = json.loads(raw)
         # Validate with Pydantic
         validated = CandidateScore(**data)
-        return validated.model_dump()
+        result = validated.model_dump()
+        result["candidate_name"] = clean_placeholder_name(result.get("candidate_name"), candidate_email)
+        return result
     except Exception as e:
         return {"error": f"Validation failed: {str(e)}", "raw": raw}

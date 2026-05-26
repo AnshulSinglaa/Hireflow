@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from groq import Groq
 import PyPDF2
 
@@ -12,6 +13,19 @@ def extract_text_from_pdf(file_path: str) -> str:
         for page in reader.pages:
             text += page.extract_text() or ""
     return text.strip()
+
+def clean_placeholder_name(name: str, email: str | None = None) -> str:
+    parsed_name = (name or "").strip()
+    is_placeholder = not parsed_name or parsed_name.lower() in [
+        "not available", "not specified", "unknown", "candidate", "n/a", "none"
+    ]
+    if is_placeholder and email:
+        prefix = email.split("@")[0]
+        cleaned = re.sub(r"[._\-0-9]+", " ", prefix).strip()
+        if not cleaned:
+            cleaned = prefix
+        return cleaned.title()
+    return parsed_name or "Unknown Candidate"
 
 def parse_resume(file_path: str) -> dict:
     resume_text = extract_text_from_pdf(file_path)

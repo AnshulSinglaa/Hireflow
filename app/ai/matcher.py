@@ -3,6 +3,7 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 from sqlalchemy.orm import Session
 from app import models
+from app.ai.parser import clean_placeholder_name
 
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
@@ -36,6 +37,13 @@ def match_candidates(job_id: int, db: Session) -> list:
         if "error" in parsed:
             continue
 
+        candidate_user = db.query(models.User).filter(
+            models.User.id == app.candidate_id
+        ).first()
+        candidate_email = candidate_user.email if candidate_user else None
+
+        name = clean_placeholder_name(parsed.get("name"), candidate_email)
+
         candidate_text = f"{' '.join(parsed.get('skills', []))} {parsed.get('summary', '')}"
         candidate_embedding = get_embedding(candidate_text)
 
@@ -44,8 +52,8 @@ def match_candidates(job_id: int, db: Session) -> list:
         results.append({
             "application_id": app.id,
             "candidate_id": app.candidate_id,
-            "name": parsed.get("name"),
-            "email": parsed.get("email"),
+            "name": name,
+            "email": parsed.get("email") or candidate_email,
             "skills": parsed.get("skills", []),
             "experience_years": parsed.get("experience_years"),
             "similarity_score": round(score * 100, 2),

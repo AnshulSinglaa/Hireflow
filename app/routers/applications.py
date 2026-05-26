@@ -4,7 +4,7 @@ from app.database import get_db
 from app import models, schemas
 from app.auth import get_current_user
 import uuid, os
-from app.ai.parser import parse_resume
+from app.ai.parser import parse_resume, clean_placeholder_name
 from app.ai.scorer import score_candidate
 import json
 
@@ -62,6 +62,8 @@ async def apply_to_job(
     print(f"Parsing resume from: {file_path}")
     try:
         parsed = parse_resume(file_path)
+        if parsed and "error" not in parsed:
+            parsed["name"] = clean_placeholder_name(parsed.get("name"), current_user.email)
         print(f"Parsed result: {parsed}")
     except Exception as e:
         print(f"PARSER ERROR: {e}")

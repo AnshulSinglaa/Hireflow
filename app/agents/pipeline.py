@@ -126,6 +126,7 @@ Return ONLY a JSON object, no markdown, no backticks:
         try:
             kit = json.loads(raw)
             kit["application_id"] = candidate["application_id"]
+            kit["candidate_name"] = candidate.get("candidate_name")
             kit["score"] = candidate.get("total_score")
             interview_kits.append(kit)
             print(f"   [INTERVIEW] ✅ Kit ready for {candidate.get('candidate_name')}")

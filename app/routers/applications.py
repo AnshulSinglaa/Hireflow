@@ -84,6 +84,14 @@ def get_parsed_resume(
     ).first()
     if not application:
         raise HTTPException(status_code=404, detail="Application not found")
+
+    # Authorization: must be the candidate who applied, or the recruiter who owns the job
+    job = db.query(models.Job).filter(models.Job.id == application.job_id).first()
+    is_own_application = current_user.id == application.candidate_id
+    is_job_owner = job and current_user.id == job.owner_id
+    if not (is_own_application or is_job_owner):
+        raise HTTPException(status_code=403, detail="Not authorized to view this resume")
+
     if not application.parsed_resume:
         raise HTTPException(status_code=404, detail="Resume not parsed yet")
     return json.loads(application.parsed_resume)
@@ -94,4 +102,17 @@ def get_candidate_score(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
+    application = db.query(models.Application).filter(
+        models.Application.id == application_id
+    ).first()
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    # Authorization: must be the candidate who applied, or the recruiter who owns the job
+    job = db.query(models.Job).filter(models.Job.id == application.job_id).first()
+    is_own_application = current_user.id == application.candidate_id
+    is_job_owner = job and current_user.id == job.owner_id
+    if not (is_own_application or is_job_owner):
+        raise HTTPException(status_code=403, detail="Not authorized to view this score")
+
     return score_candidate(application_id, db)

@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, BackgroundTasks
+from fastapi import APIRouter, Depends, BackgroundTasks, Request
+from app.limiter import rate_limit
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app import models
@@ -41,7 +42,8 @@ def run_pipeline_task(task_id: str, job_id: int, db: Session):
         print(f"❌ Task {task_id} failed: {e}")
 
 @router.get("/{task_id}")
-def get_task(task_id: str, db: Session = Depends(get_db)):
+@rate_limit("30/minute")
+def get_task(request: Request, task_id: str, db: Session = Depends(get_db)):
     task = db.query(models.TaskStatus).filter(
         models.TaskStatus.id == task_id
     ).first()

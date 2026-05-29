@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
+from app.limiter import rate_limit
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app import models, schemas
@@ -13,7 +14,9 @@ router = APIRouter(tags=["Applications"])
 UPLOAD_DIR = "uploads/resumes"
 
 @router.post("/jobs/{job_id}/apply", response_model=schemas.ApplicationResponse, status_code=201)
+@rate_limit("5/minute")
 async def apply_to_job(
+    request: Request,
     job_id: int,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -74,7 +77,9 @@ async def apply_to_job(
     return application
 
 @router.get("/applications/{application_id}/parsed")
+@rate_limit("20/minute")
 def get_parsed_resume(
+    request: Request,
     application_id: int,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
@@ -97,7 +102,9 @@ def get_parsed_resume(
     return json.loads(application.parsed_resume)
 
 @router.get("/applications/{application_id}/score")
+@rate_limit("10/minute")
 def get_candidate_score(
+    request: Request,
     application_id: int,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)

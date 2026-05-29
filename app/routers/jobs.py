@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from app.database import get_db
@@ -9,12 +9,15 @@ from app.ai.rag import ask_about_candidates
 from app.agents.screening_agent import run_screening_agent
 from app.agents.pipeline import run_full_pipeline
 from app.routers.tasks import run_pipeline_task
+from app.limiter import rate_limit
 import uuid
+
 router = APIRouter(prefix="/jobs", tags=["Jobs"])
 
 
 @router.post("/", response_model=schemas.JobResponse, status_code=201)
-def create_job(
+@rate_limit("20/minute")
+def create_job(request: Request,
     job: schemas.JobCreate,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
@@ -34,12 +37,14 @@ def create_job(
 
 
 @router.get("/", response_model=list[schemas.JobResponse])
-def get_jobs(db: Session = Depends(get_db)):
+@rate_limit("60/minute")
+def get_jobs(request: Request, db: Session = Depends(get_db)):
     return db.query(models.Job).all()
 
 
 @router.get("/{job_id}", response_model=schemas.JobResponse)
-def get_job(job_id: int, db: Session = Depends(get_db)):
+@rate_limit("60/minute")
+def get_job(request: Request, job_id: int, db: Session = Depends(get_db)):
     job = db.query(models.Job).filter(models.Job.id == job_id).first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -47,7 +52,9 @@ def get_job(job_id: int, db: Session = Depends(get_db)):
 
 
 @router.delete("/{job_id}", status_code=204)
+@rate_limit("20/minute")
 def delete_job(
+    request: Request,
     job_id: int,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
@@ -63,7 +70,9 @@ def delete_job(
 
 
 @router.get("/{job_id}/applications", response_model=list[schemas.ApplicationResponse])
+@rate_limit("30/minute")
 def get_job_applications(
+    request: Request,
     job_id: int,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
@@ -83,7 +92,9 @@ def get_job_applications(
 
 
 @router.get("/{job_id}/match")
+@rate_limit("10/minute")
 def match_job_candidates(
+    request: Request,
     job_id: int,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
@@ -102,7 +113,9 @@ def match_job_candidates(
     return results
 
 @router.post("/{job_id}/ask")
+@rate_limit("10/minute")
 def ask_job_candidates(
+    request: Request,
     job_id: int,
     question: schemas.RecruiterQuestion,
     db: Session = Depends(get_db),
@@ -123,7 +136,9 @@ def ask_job_candidates(
 
 
 @router.post("/{job_id}/ask/stream")
+@rate_limit("10/minute")
 async def ask_stream(
+    request: Request,
     job_id: int,
     question: schemas.RecruiterQuestion,
     db: Session = Depends(get_db),
@@ -151,7 +166,9 @@ async def ask_stream(
 
 
 @router.post("/{job_id}/screen")
+@rate_limit("5/minute")
 def screen_job_candidates(
+    request: Request,
     job_id: int,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
@@ -170,7 +187,9 @@ def screen_job_candidates(
     return result
 
 @router.post("/{job_id}/pipeline")
+@rate_limit("5/minute")
 def run_job_pipeline(
+    request: Request,
     job_id: int,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
@@ -189,7 +208,9 @@ def run_job_pipeline(
     return result
 
 @router.post("/{job_id}/pipeline/dry-run")
+@rate_limit("5/minute")
 def run_job_pipeline_dry_run(
+    request: Request,
     job_id: int,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
@@ -208,7 +229,9 @@ def run_job_pipeline_dry_run(
     return result
 
 @router.post("/{job_id}/pipeline/async")
+@rate_limit("5/minute")
 def run_pipeline_async(
+    request: Request,
     job_id: int,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),

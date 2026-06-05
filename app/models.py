@@ -1,6 +1,7 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, UniqueConstraint
 from datetime import datetime
 from app.database import Base
+from pgvector.sqlalchemy import Vector
 
 class User(Base):
     __tablename__ = "users"
@@ -23,6 +24,9 @@ class Job(Base):
 
 class Application(Base):
     __tablename__ = "applications"
+    __table_args__ = (
+        UniqueConstraint("job_id", "candidate_id", name="uq_job_candidate"),
+    )
 
     id = Column(Integer, primary_key=True)
     job_id = Column(Integer, ForeignKey("jobs.id"))
@@ -30,6 +34,7 @@ class Application(Base):
     status = Column(String, default="pending")
     resume_path = Column(String, nullable=True)
     parsed_resume = Column(Text, nullable=True)
+    embedding = Column(Vector(384), nullable=True)  # pgvector
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class AgentMemory(Base):

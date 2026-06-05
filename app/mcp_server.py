@@ -5,7 +5,10 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dotenv import load_dotenv
-load_dotenv()
+# Robustly load .env from the project root directory
+base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+dotenv_path = os.path.join(base_dir, ".env")
+load_dotenv(dotenv_path=dotenv_path)
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server

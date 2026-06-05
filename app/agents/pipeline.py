@@ -11,16 +11,21 @@ client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 # ─────────────────────────────────────────
 # AGENT 1 — SCREENER
 # ─────────────────────────────────────────
-def run_screener_agent(job_id: int, db: Session) -> dict:
+def run_screener_agent(job_id: int, db: Session, candidate_ids: list = None) -> dict:
     print("\n[SCREENER] Starting...")
     
     job = db.query(models.Job).filter(models.Job.id == job_id).first()
     if not job:
         return {"error": "Job not found", "candidates": []}
 
-    applications = db.query(models.Application).filter(
+    query = db.query(models.Application).filter(
         models.Application.job_id == job_id
-    ).all()
+    )
+    # if ATS threshold provided a candidate list, restrict to those only
+    if candidate_ids:
+        query = query.filter(models.Application.id.in_(candidate_ids))
+
+    applications = query.all()
 
     valid = []
     skipped = []
@@ -326,17 +331,19 @@ health_score is 0-100: how healthy is this hiring pipeline?"""
 # ─────────────────────────────────────────
 # COORDINATOR — runs the full pipeline
 # ─────────────────────────────────────────
-def run_full_pipeline(job_id: int, db: Session, dry_run: bool = False) -> dict:
+def run_full_pipeline(job_id: int, db: Session, dry_run: bool = False, candidate_ids: list = None) -> dict:
     print(f"\n{'='*50}")
     print(f"🚀 HIREFLOW PIPELINE STARTING — Job {job_id}")
     if dry_run:
         print(f"⚠️  DRY RUN MODE — no real actions will be taken")
+    if candidate_ids:
+        print(f"🎯 ATS-filtered: {len(candidate_ids)} candidate(s) in pipeline")
     print(f"{'='*50}")
 
     guardrails = AgentGuardrails(dry_run=dry_run, require_approval=False)
 
-    # Step 1 — Screen
-    screener_output = run_screener_agent(job_id, db)
+    # Step 1 — Screen (restricted to ATS-qualified candidates if provided)
+    screener_output = run_screener_agent(job_id, db, candidate_ids=candidate_ids)
     if screener_output.get("error"):
         return {"error": screener_output["error"]}
     if not screener_output["valid_candidates"]:

@@ -74,6 +74,38 @@ async def apply_to_job(
     application.parsed_resume = json.dumps(parsed)
     db.commit()
 
+    # Save embedding to DB for hybrid search
+    try:
+        from app.ai.matcher import save_embedding, is_duplicate_resume
+        if parsed and "error" not in parsed:
+            skills = " ".join(parsed.get("skills", []))
+            summary = parsed.get("summary", "")
+            resume_text = f"{skills} {summary}"
+            save_embedding(application.id, resume_text, db)
+
+            # duplicate resume check
+            if is_duplicate_resume(application.id, job_id, db):
+                # mark as duplicate, don't delete — recruiter can see it
+                application.status = "duplicate"
+                db.commit()
+    except Exception as e:
+        print(f"EMBEDDING ERROR: {e}")
+        # non-fatal — app still created, matching falls back gracefully
+
+    # run ATS gate after embedding saved
+    try:
+        from app.ai.ats_gate import run_ats_gate
+        from app.ai.ats_scorer import run_ats_soft_score
+        ats_result = run_ats_gate(application.id, job_id, db)
+        print(f"ATS GATE: {ats_result}")
+
+        # only run soft score if passed hard knockout
+        if ats_result["passed"]:
+            soft_score = run_ats_soft_score(application.id, job_id, db)
+            print(f"ATS SOFT SCORE: {soft_score.get('ats_score')}/100 — {soft_score.get('verdict')}")
+    except Exception as e:
+        print(f"ATS ERROR: {e}")
+
     return application
 
 @router.get("/applications/{application_id}/parsed")

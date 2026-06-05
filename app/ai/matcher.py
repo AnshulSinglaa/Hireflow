@@ -24,6 +24,45 @@ def save_embedding(application_id: int, resume_text: str, db: Session):
         db.commit()
 
 
+def is_duplicate_resume(
+    application_id: int,
+    job_id: int,
+    db: Session,
+    threshold: float = 0.92
+) -> bool:
+    """
+    Check if this resume is too similar to an existing
+    application for the same job — different account, same resume.
+    Returns True if duplicate found.
+    """
+    # get this application's embedding
+    current_app = db.query(models.Application).filter(
+        models.Application.id == application_id
+    ).first()
+
+    if not current_app or current_app.embedding is None:
+        return False
+
+    # find any other application for same job with
+    # cosine similarity above threshold
+    result = db.execute(text("""
+        SELECT id
+        FROM applications
+        WHERE job_id = :job_id
+          AND id != :app_id
+          AND embedding IS NOT NULL
+          AND 1 - (embedding <=> CAST(:embedding AS vector)) >= :threshold
+        LIMIT 1
+    """), {
+        "job_id": job_id,
+        "app_id": application_id,
+        "embedding": str(current_app.embedding),
+        "threshold": threshold
+    }).fetchone()
+
+    return result is not None
+
+
 def semantic_search(job_embedding: list, job_id: int, db: Session) -> dict:
     """pgvector cosine similarity search — returns {app_id: rank}"""
     results = db.execute(text("""

@@ -12,7 +12,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.limiter import limiter
-from app.routers import auth, jobs, applications, tasks
+from app.routers import auth, jobs, applications, tasks, companies
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -33,6 +33,7 @@ app.add_middleware(
         "http://127.0.0.1:5173",
         "http://127.0.0.1:5174",
         "http://127.0.0.1:5175",
+        "http://127.0.0.1:5176",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -51,6 +52,7 @@ app.include_router(auth.router)
 app.include_router(jobs.router)
 app.include_router(applications.router)
 app.include_router(tasks.router)
+app.include_router(companies.router)
 
 @app.get("/")
 def read_root():

@@ -24,6 +24,7 @@ def create_job(request: Request,
 ):
     if current_user.role != "recruiter":
         raise HTTPException(status_code=403, detail="Only recruiters can post jobs")
+    
     new_job = models.Job(
         title=job.title,
         description=job.description,
@@ -33,7 +34,19 @@ def create_job(request: Request,
     db.add(new_job)
     db.commit()
     db.refresh(new_job)
+
+    # extract ATS criteria from JD automatically
+    try:
+        from app.ai.ats_parser import extract_ats_criteria
+        criteria = extract_ats_criteria(job.title, job.description)
+        new_job.ats_criteria = criteria
+        db.commit()
+    except Exception as e:
+        print(f"ATS PARSER ERROR: {e}")
+        # non-fatal — job still created without criteria
+
     return new_job
+
 
 
 @router.get("/", response_model=list[schemas.JobResponse])
@@ -202,10 +215,43 @@ def run_job_pipeline(
         raise HTTPException(status_code=404, detail="Job not found")
 
     if job.owner_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized to run pipeline for this job")
+        raise HTTPException(status_code=403, detail="Not authorized")
 
-    result = run_full_pipeline(job_id, db)
+    # get only ATS-qualified candidates
+    from app.ai.ats_threshold import get_pipeline_candidates
+    candidate_ids = get_pipeline_candidates(job_id, db)
+
+    if not candidate_ids:
+        return {
+            "message": "No candidates passed ATS gate",
+            "pipeline_ran": False,
+            "suggestion": "Lower ATS threshold or check job criteria"
+        }
+
+    result = run_full_pipeline(job_id, db, candidate_ids=candidate_ids)
     return result
+
+@router.get("/{job_id}/ats-summary")
+@rate_limit("30/minute")
+def get_job_ats_summary(
+    request: Request,
+    job_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    if current_user.role != "recruiter":
+        raise HTTPException(status_code=403, detail="Only recruiters")
+
+    job = db.query(models.Job).filter(models.Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    from app.ai.ats_threshold import get_ats_summary
+    return get_ats_summary(job_id, db)
+
 
 @router.post("/{job_id}/pipeline/dry-run")
 @rate_limit("5/minute")

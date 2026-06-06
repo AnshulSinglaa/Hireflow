@@ -46,8 +46,9 @@ def tracked_llm_call(client, endpoint: str, **kwargs):
     error = None
     response = None
 
+    from app.ai.groq_client import groq_with_retry
     try:
-        response = client.chat.completions.create(**kwargs)
+        response = groq_with_retry(**kwargs)
         success = True
     except Exception as e:
         error = str(e)

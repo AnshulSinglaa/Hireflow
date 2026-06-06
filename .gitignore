@@ -31,3 +31,6 @@ Resume/Resume.csv
 scripts/temp_resume_*.pdf
 scripts/_test.pdf
 curl
+temp_*.txt
+temp_*.py
+docker-compose.override.yml

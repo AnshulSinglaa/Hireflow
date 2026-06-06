@@ -9,9 +9,25 @@ from app.ai.parser import clean_placeholder_name
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
+_executor = ThreadPoolExecutor(max_workers=2)
+
 def get_embedding(text_input: str) -> list:
+    """Synchronous version — use in non-async contexts"""
     return model.encode(text_input).tolist()
 
+async def get_embedding_async(text_input: str) -> list:
+    """
+    Async version — runs sentence-transformers in thread pool
+    so it doesn't block FastAPI event loop
+    """
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        _executor,
+        lambda: model.encode(text_input).tolist()
+    )
 
 def save_embedding(application_id: int, resume_text: str, db: Session):
     """Call this once when resume is parsed — saves embedding to DB"""
@@ -24,12 +40,17 @@ def save_embedding(application_id: int, resume_text: str, db: Session):
         db.commit()
 
 
+import os
+DUPLICATE_THRESHOLD = float(os.getenv("DUPLICATE_THRESHOLD", "0.92"))
+
 def is_duplicate_resume(
     application_id: int,
     job_id: int,
     db: Session,
-    threshold: float = 0.92
+    threshold: float = None
 ) -> bool:
+    if threshold is None:
+        threshold = DUPLICATE_THRESHOLD
     """
     Check if this resume is too similar to an existing
     application for the same job — different account, same resume.
@@ -83,7 +104,7 @@ def semantic_search(job_embedding: list, job_id: int, db: Session) -> dict:
 
 
 def bm25_search(job_keywords: list, job_id: int, db: Session) -> dict:
-    """Keyword matching — returns {app_id: rank}"""
+    """Keyword frequency scoring — returns {app_id: rank}"""
     applications = db.query(models.Application).filter(
         models.Application.job_id == job_id,
         models.Application.parsed_resume != None

@@ -5,16 +5,14 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import logging
-from app.database import engine
 from app import models
 
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.limiter import limiter
-from app.routers import auth, jobs, applications, tasks, companies
+from app.routers import auth, jobs, applications, tasks, companies, reports, notifications
 
-models.Base.metadata.create_all(bind=engine)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -23,6 +21,35 @@ app = FastAPI(title="HireFlow API", version="0.1.0")
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+from datetime import datetime, timedelta
+
+@app.on_event("startup")
+async def cleanup_old_memory():
+    """Delete agent memory older than 30 days on startup"""
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        cutoff = datetime.utcnow() - timedelta(days=30)
+        db.query(models.AgentMemory).filter(
+            models.AgentMemory.created_at < cutoff
+        ).delete()
+        db.commit()
+        print("✅ Old agent memory cleaned up")
+    except Exception as e:
+        print(f"Memory cleanup failed: {e}")
+    finally:
+        db.close()
+
+import uuid
+
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    request_id = str(uuid.uuid4())[:8]
+    request.state.request_id = request_id
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
 
 app.add_middleware(
     CORSMiddleware,
@@ -53,6 +80,8 @@ app.include_router(jobs.router)
 app.include_router(applications.router)
 app.include_router(tasks.router)
 app.include_router(companies.router)
+app.include_router(reports.router)
+app.include_router(notifications.router)
 
 @app.get("/")
 def read_root():
@@ -60,8 +89,16 @@ def read_root():
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok"}
-
+    import os
+    from app.database import check_db_connection
+    db_ok = check_db_connection()
+    groq_ok = bool(os.getenv("GROQ_API_KEY"))
+    return {
+        "status": "ok" if db_ok else "degraded",
+        "database": "connected" if db_ok else "disconnected",
+        "groq": "configured" if groq_ok else "missing key",
+        "version": "0.1.0"
+    }
 @app.get("/observability")
 def get_observability():
     return {

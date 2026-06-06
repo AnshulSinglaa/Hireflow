@@ -10,6 +10,9 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 @router.post("/register", response_model=schemas.UserResponse, status_code=201)
 @rate_limit("3/minute")
 def register(request: Request, user: schemas.UserCreate, db: Session = Depends(get_db)):
+    from app.auth import VALID_ROLES
+    if user.role not in VALID_ROLES:
+        raise HTTPException(status_code=400, detail=f"Invalid role. Must be one of: {', '.join(VALID_ROLES)}")
     existing = db.query(models.User).filter(models.User.email == user.email).first()
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")

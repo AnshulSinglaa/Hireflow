@@ -11,7 +11,9 @@ from datetime import datetime
 
 router = APIRouter(prefix="/tasks", tags=["Tasks"])
 
-def run_pipeline_task(task_id: str, job_id: int, db: Session):
+def run_pipeline_task(task_id: str, job_id: int):
+    from app.database import SessionLocal
+    db = SessionLocal()
     try:
         db.query(models.TaskStatus).filter(
             models.TaskStatus.id == task_id
@@ -40,6 +42,8 @@ def run_pipeline_task(task_id: str, job_id: int, db: Session):
         })
         db.commit()
         print(f"❌ Task {task_id} failed: {e}")
+    finally:
+        db.close()
 
 @router.get("/{task_id}")
 @rate_limit("30/minute")

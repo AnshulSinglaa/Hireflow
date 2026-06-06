@@ -41,6 +41,14 @@ async def apply_to_job(
         raise HTTPException(status_code=400, detail="Only PDF files allowed")
 
     contents = await file.read()
+    
+    # validate PDF magic bytes — first 4 bytes must be %PDF
+    if not contents.startswith(b'%PDF'):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file — not a valid PDF"
+        )
+
     if len(contents) > 5 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="File too large. Max 5MB")
 
@@ -51,58 +59,55 @@ async def apply_to_job(
     with open(file_path, "wb") as f:
         f.write(contents)
 
-    # Save to DB
-    application = models.Application(
-        job_id=job_id,
-        candidate_id=current_user.id,
-        resume_path=file_path
-    )
-    db.add(application)
-    db.commit()
-    db.refresh(application)
-
-    # Parse resume with AI
-    print(f"Parsing resume from: {file_path}")
+    # wrap all DB writes in one transaction
     try:
-        parsed = parse_resume(file_path)
+        # Save application
+        application = models.Application(
+            job_id=job_id,
+            candidate_id=current_user.id,
+            resume_path=file_path
+        )
+        db.add(application)
+        db.flush()  # get ID without committing
+
+        # Parse resume
+        try:
+            parsed = parse_resume(file_path)
+            if parsed and "error" not in parsed:
+                parsed["name"] = clean_placeholder_name(
+                    parsed.get("name"), current_user.email
+                )
+        except Exception as e:
+            print(f"PARSER ERROR: {e}")
+            parsed = {"error": str(e)}
+
+        application.parsed_resume = json.dumps(parsed)
+
+        # Save embedding
         if parsed and "error" not in parsed:
-            parsed["name"] = clean_placeholder_name(parsed.get("name"), current_user.email)
-        print(f"Parsed result: {parsed}")
+            try:
+                from app.ai.matcher import save_embedding
+                skills = " ".join(parsed.get("skills", []))
+                summary = parsed.get("summary", "")
+                save_embedding(application.id, f"{skills} {summary}", db)
+            except Exception as e:
+                print(f"EMBEDDING ERROR: {e}")
+                # non-fatal
+
+        db.commit()  # single commit for everything
+        db.refresh(application)
+
     except Exception as e:
-        print(f"PARSER ERROR: {e}")
-        parsed = {"error": str(e)}
-    application.parsed_resume = json.dumps(parsed)
-    db.commit()
+        db.rollback()  # rollback everything if any step fails
+        raise HTTPException(status_code=500, detail=f"Application failed: {str(e)}")
 
-    # Save embedding to DB for hybrid search
-    try:
-        from app.ai.matcher import save_embedding, is_duplicate_resume
-        if parsed and "error" not in parsed:
-            skills = " ".join(parsed.get("skills", []))
-            summary = parsed.get("summary", "")
-            resume_text = f"{skills} {summary}"
-            save_embedding(application.id, resume_text, db)
-
-            # duplicate resume check
-            if is_duplicate_resume(application.id, job_id, db):
-                # mark as duplicate, don't delete — recruiter can see it
-                application.status = "duplicate"
-                db.commit()
-    except Exception as e:
-        print(f"EMBEDDING ERROR: {e}")
-        # non-fatal — app still created, matching falls back gracefully
-
-    # run ATS gate after embedding saved
+    # ATS gate runs after commit — separate operation
     try:
         from app.ai.ats_gate import run_ats_gate
         from app.ai.ats_scorer import run_ats_soft_score
         ats_result = run_ats_gate(application.id, job_id, db)
-        print(f"ATS GATE: {ats_result}")
-
-        # only run soft score if passed hard knockout
         if ats_result["passed"]:
-            soft_score = run_ats_soft_score(application.id, job_id, db)
-            print(f"ATS SOFT SCORE: {soft_score.get('ats_score')}/100 — {soft_score.get('verdict')}")
+            run_ats_soft_score(application.id, job_id, db)
     except Exception as e:
         print(f"ATS ERROR: {e}")
 

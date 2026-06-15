@@ -404,7 +404,7 @@ Pipeline Statistics:
 """
 
     # always do hybrid retrieval for candidate context
-    candidates = hybrid_retrieve(question, job_id, db, top_k=8)
+    candidates = hybrid_retrieve(question, job_id, db, top_k=4)
 
     if not candidates:
         # fallback — get all if hybrid fails

@@ -11,7 +11,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.limiter import limiter
-from app.routers import auth, jobs, applications, tasks, companies, reports, notifications
+from app.routers import auth, jobs, applications, tasks, companies, reports, notifications, candidates
 
 
 logging.basicConfig(level=logging.INFO)
@@ -82,6 +82,7 @@ app.include_router(tasks.router)
 app.include_router(companies.router)
 app.include_router(reports.router)
 app.include_router(notifications.router)
+app.include_router(candidates.router)
 
 @app.get("/")
 def read_root():

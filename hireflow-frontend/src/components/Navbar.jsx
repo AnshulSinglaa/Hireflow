@@ -19,7 +19,10 @@ export default function Navbar() {
           <>
             <Link to="/" className="text-gray-600 hover:text-blue-600">Jobs</Link>
             {role === 'recruiter' && (
-              <Link to="/dashboard" className="text-gray-600 hover:text-blue-600">Dashboard</Link>
+              <Link to="/recruiter/dashboard" className="text-gray-600 hover:text-blue-600">Dashboard</Link>
+            )}
+            {role === 'candidate' && (
+              <Link to="/profile" className="text-gray-600 hover:text-blue-600">Profile</Link>
             )}
             <button
               onClick={handleLogout}

@@ -15,11 +15,6 @@ export default function Dashboard() {
   const navigate = useNavigate()
   const token = localStorage.getItem('token')
 
-  useEffect(() => {
-    if (!token) { navigate('/login'); return }
-    fetchJobs()
-  }, [])
-
   const fetchJobs = async () => {
     setLoading(true)
     try {
@@ -33,6 +28,11 @@ export default function Dashboard() {
       setLoading(false)
     }
   }
+
+  useEffect(() => {
+    if (!token) { navigate('/login'); return }
+    fetchJobs()
+  }, [])
 
   const createJob = async (e) => {
     e.preventDefault()
@@ -90,7 +90,7 @@ export default function Dashboard() {
         if (done) break
         setAnswer(prev => prev + decoder.decode(value))
       }
-    } catch (err) {
+    } catch {
       setAnswer('Failed to get answer')
     } finally {
       setAskLoading(false)

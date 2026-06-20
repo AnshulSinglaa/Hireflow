@@ -69,13 +69,53 @@ def validate_input(question: str) -> dict:
 
 QUERY_TYPES = {
     "count": ["how many", "count", "total", "number of"],
-    "stats": ["average", "avg", "mean", "score", "highest", "lowest", "best", "worst", "top"],
+    # NOTE: "score" removed — score-threshold queries are handled separately
+    "stats": ["average", "avg", "mean", "highest", "lowest", "best", "worst", "top"],
     "specific": ["candidate", "who is", "tell me about", "describe"],
     "comparison": ["compare", "difference", "versus", "vs", "better", "stronger", "rank"],
     "shortlist": ["shortlist", "recommend", "suggest", "hire", "best fit", "suitable"],
     "skills": ["skill", "technology", "experience with", "knows", "expertise"],
     "general": []  # fallback
 }
+
+# Score-threshold patterns: "above 70", "greater than 70", "> 70", "more than 70", "over 70", "at least 70"
+_SCORE_ABOVE_RE = re.compile(
+    r'(?:above|greater\s+than|more\s+than|over|>|>=|at\s+least)\s*(\d+)',
+    re.IGNORECASE
+)
+_SCORE_BELOW_RE = re.compile(
+    r'(?:below|less\s+than|under|<|<=)\s*(\d+)',
+    re.IGNORECASE
+)
+
+
+def detect_score_filter(question: str) -> dict | None:
+    """
+    Detect if the question asks for candidates filtered by score threshold.
+    Returns {"field": "ats_score"|"pipeline_score", "op": "above"|"below", "value": int}
+    or None if no score filter detected.
+    """
+    q_lower = question.lower()
+
+    # Must mention score-like words to be a score-filter query
+    score_words = ["score", "mark", "marks", "points", "ats", "pipeline"]
+    if not any(w in q_lower for w in score_words):
+        return None
+
+    # Determine which score field
+    field = "ats_score"
+    if "pipeline" in q_lower:
+        field = "pipeline_score"
+
+    above_match = _SCORE_ABOVE_RE.search(question)
+    if above_match:
+        return {"field": field, "op": "above", "value": int(above_match.group(1))}
+
+    below_match = _SCORE_BELOW_RE.search(question)
+    if below_match:
+        return {"field": field, "op": "below", "value": int(below_match.group(1))}
+
+    return None
 
 
 def route_query(question: str) -> str:
@@ -127,55 +167,107 @@ def retrieve_by_db_query(question: str, job_id: int, db: Session) -> list:
     return results
 
 
+def retrieve_by_score_filter(score_filter: dict, job_id: int, db: Session) -> list:
+    """
+    Direct DB query filtering candidates by ATS/pipeline score threshold.
+    Only returns candidates that actually have a score stored.
+    """
+    field = score_filter["field"]   # "ats_score" or "pipeline_score"
+    op = score_filter["op"]         # "above" or "below"
+    value = score_filter["value"]   # int threshold
+
+    score_col = (
+        models.Application.ats_score
+        if field == "ats_score"
+        else models.Application.pipeline_score
+    )
+
+    condition = (score_col >= value) if op == "above" else (score_col <= value)
+
+    apps = (
+        db.query(models.Application)
+        .filter(
+            models.Application.job_id == job_id,
+            models.Application.parsed_resume != None,
+            score_col != None,      # must have an actual score
+            condition,
+        )
+        .order_by(score_col.desc())
+        .all()
+    )
+
+    candidates = []
+    for app in apps:
+        try:
+            parsed = json.loads(app.parsed_resume)
+            if "error" in parsed:
+                continue
+            candidates.append({
+                "application_id": app.id,
+                "parsed": parsed,
+                "ats_score": app.ats_score,
+                "pipeline_score": app.pipeline_score,
+                "status": app.status,
+                "retrieval_method": f"score_filter ({field} {op} {value})",
+            })
+        except Exception:
+            continue
+
+    return candidates
+
+
 def retrieve_by_semantic_search(question: str, job_id: int, db: Session, top_k: int = 10) -> list:
     """
-    pgvector cosine similarity search.
-    Find candidates most semantically relevant to the question.
+    Python-side cosine similarity search using JSONB embeddings.
+    (pgvector is not installed on this system — we compute similarity in Python with numpy.)
     """
+    import numpy as np
     from app.ai.matcher import get_embedding
 
     try:
-        query_embedding = get_embedding(question)
+        query_emb = get_embedding(question)
+        q_vec = np.array(query_emb, dtype=np.float32)
+        q_norm = np.linalg.norm(q_vec)
+        if q_norm == 0:
+            return []
 
-        rows = db.execute(text("""
-            SELECT
-                a.id,
-                a.parsed_resume,
-                a.ats_score,
-                a.pipeline_score,
-                a.status,
-                1 - (a.embedding <=> CAST(:embedding AS vector)) AS similarity
-            FROM applications a
-            WHERE a.job_id = :job_id
-              AND a.embedding IS NOT NULL
-              AND a.parsed_resume IS NOT NULL
-            ORDER BY similarity DESC
-            LIMIT :top_k
-        """), {
-            "embedding": str(query_embedding),
-            "job_id": job_id,
-            "top_k": top_k
-        }).fetchall()
+        # Fetch all applications for this job that have embeddings and parsed resumes
+        apps = db.query(models.Application).filter(
+            models.Application.job_id == job_id,
+            models.Application.embedding != None,
+            models.Application.parsed_resume != None,
+        ).all()
 
-        results = []
-        for row in rows:
+        scored = []
+        for app in apps:
             try:
-                parsed = json.loads(row[1])
+                emb = app.embedding  # Python list from JSONB
+                if emb is None:
+                    continue
+                a_vec = np.array(emb, dtype=np.float32)
+                a_norm = np.linalg.norm(a_vec)
+                if a_norm == 0:
+                    continue
+                similarity = float(np.dot(q_vec, a_vec) / (q_norm * a_norm))
+
+                parsed = json.loads(app.parsed_resume)
                 if "error" in parsed:
                     continue
-                results.append({
-                    "application_id": row[0],
+
+                scored.append({
+                    "application_id": app.id,
                     "parsed": parsed,
-                    "ats_score": row[2],
-                    "pipeline_score": row[3],
-                    "status": row[4],
-                    "similarity": float(row[5]),
+                    "ats_score": app.ats_score,
+                    "pipeline_score": app.pipeline_score,
+                    "status": app.status,
+                    "similarity": similarity,
                     "retrieval_method": "semantic"
                 })
             except Exception:
                 continue
 
-        return results
+        scored.sort(key=lambda x: x["similarity"], reverse=True)
+        return scored[:top_k]
 
     except Exception as e:
         print(f"[RAG] Semantic search failed: {e} — falling back to keyword")
@@ -388,6 +480,7 @@ def ask_about_candidates(job_id: int, question: str, db: Session) -> str:
 
     # STEP 3 — route query
     query_type = route_query(question)
+    q_lower = question.lower()
     print(f"[RAG] Query type detected: {query_type}")
 
     # STEP 4 — retrieve context based on query type
@@ -403,17 +496,58 @@ Pipeline Statistics:
 - Shortlisted: {stats.get('shortlisted', 0)}
 """
 
-    # always do hybrid retrieval for candidate context
-    candidates = hybrid_retrieve(question, job_id, db, top_k=4)
+    # ── Priority 1: score-threshold queries ("candidates who scored above 70") ──
+    score_filter = detect_score_filter(question)
 
-    if not candidates:
-        # fallback — get all if hybrid fails
-        applications = db.query(models.Application).filter(
+    # Detect if user wants a list of candidates by status
+    is_list_query = any(kw in q_lower for kw in ["list", "all candidates", "all the", "everyone", "give me all", "show me all", "show all"])
+    wants_passed  = any(kw in q_lower for kw in ["passed ats", "ats passed", "passed the ats", "cleared ats", "who passed"])
+    wants_failed  = any(kw in q_lower for kw in ["failed ats", "ats failed", "didn't pass", "not passed", "who failed"])
+
+    if score_filter:
+        # Direct DB fetch filtered by actual score value
+        candidates = retrieve_by_score_filter(score_filter, job_id, db)
+        print(f"[RAG] Score-filter retrieval: {len(candidates)} candidates "
+              f"({score_filter['field']} {score_filter['op']} {score_filter['value']})")
+
+        if not candidates:
+            # Check whether ANY applications have scores at all
+            scored_count = db.query(models.Application).filter(
+                models.Application.job_id == job_id,
+                models.Application.ats_score != None,
+            ).count()
+            total_count = db.query(models.Application).filter(
+                models.Application.job_id == job_id
+            ).count()
+            if scored_count == 0 and total_count > 0:
+                return (
+                    f"There are {total_count} application(s) for this job, but none have been "
+                    "scored yet. Please run the ATS pipeline first (click **Run Pipeline** on the "
+                    "job page) to generate scores, then try your question again."
+                )
+            return (
+                f"No candidates found with {score_filter['field'].replace('_', ' ')} "
+                f"{score_filter['op']} {score_filter['value']}."
+            )
+
+    elif is_list_query or wants_passed or wants_failed:
+        # Direct DB fetch — much better for list/status questions
+        status_filter = None
+        if wants_passed:
+            status_filter = "ats_passed"
+        elif wants_failed:
+            status_filter = "ats_failed"
+
+        app_query = db.query(models.Application).filter(
             models.Application.job_id == job_id,
             models.Application.parsed_resume != None
-        ).all()
+        )
+        if status_filter:
+            app_query = app_query.filter(models.Application.status == status_filter)
+        app_query = app_query.order_by(models.Application.ats_score.desc())
+
         candidates = []
-        for app in applications:
+        for app in app_query.all():
             try:
                 parsed = json.loads(app.parsed_resume)
                 if "error" not in parsed:
@@ -422,20 +556,49 @@ Pipeline Statistics:
                         "parsed": parsed,
                         "ats_score": app.ats_score,
                         "pipeline_score": app.pipeline_score,
-                        "status": app.status
+                        "status": app.status,
+                        "retrieval_method": "db_direct"
                     })
             except Exception:
                 continue
+        print(f"[RAG] DB-direct retrieval: {len(candidates)} candidates (status_filter={status_filter})")
+    else:
+        # Hybrid semantic+keyword retrieval for all other questions
+        candidates = hybrid_retrieve(question, job_id, db, top_k=10)
+
+        if not candidates:
+            # fallback — get all if hybrid fails
+            applications = db.query(models.Application).filter(
+                models.Application.job_id == job_id,
+                models.Application.parsed_resume != None
+            ).all()
+            candidates = []
+            for app in applications:
+                try:
+                    parsed = json.loads(app.parsed_resume)
+                    if "error" not in parsed:
+                        candidates.append({
+                            "application_id": app.id,
+                            "parsed": parsed,
+                            "ats_score": app.ats_score,
+                            "pipeline_score": app.pipeline_score,
+                            "status": app.status
+                        })
+                except Exception:
+                    continue
 
     if not candidates:
         return "No candidates have applied to this job yet."
 
-    # STEP 5 — re-rank
-    if query_type not in ["count", "stats"] and len(candidates) > 10:
-        candidates = rerank_candidates(question, candidates, job.title, top_k=5)
+    # STEP 5 — re-rank / cap results
+    if score_filter or is_list_query or wants_passed or wants_failed:
+        # For explicit DB-fetched lists: pass all directly (cap at 30 to avoid token overflow)
+        candidates = candidates[:30]
+    elif query_type not in ["count", "stats"] and len(candidates) > 10:
+        candidates = rerank_candidates(question, candidates, job.title, top_k=8)
         print(f"[RAG] Re-ranked to top {len(candidates)} candidates")
     else:
-        candidates = candidates[:5]
+        candidates = candidates[:8]
 
     # STEP 6 — build context
     candidates_context = db_context

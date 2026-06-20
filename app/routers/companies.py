@@ -37,8 +37,6 @@ def create_company(
     existing = db.query(models.Company).filter(
         models.Company.owner_id == current_user.id
     ).first()
-    if existing:
-        raise HTTPException(status_code=409, detail="Company profile already exists")
 
     # run trust score calculation
     trust_result = calculate_trust_score(
@@ -48,25 +46,43 @@ def create_company(
         gst_number=data.gst_number
     )
 
-    company = models.Company(
-        owner_id=current_user.id,
-        name=data.name,
-        about=data.about,
-        website=data.website,
-        linkedin_url=data.linkedin_url,
-        gst_number=data.gst_number,
-        industry=data.industry,
-        size=data.size,
-        location=data.location,
-        trust_score=trust_result["trust_score"],
-        verification_status=trust_result["verification_status"],
-        domain_verified=trust_result["domain_verified"],
-        website_verified=trust_result["website_verified"],
-        linkedin_verified=trust_result["linkedin_verified"],
-    )
-    db.add(company)
-    db.commit()
-    db.refresh(company)
+    if existing:
+        existing.name = data.name
+        existing.about = data.about
+        existing.website = data.website
+        existing.linkedin_url = data.linkedin_url
+        existing.gst_number = data.gst_number
+        existing.industry = data.industry
+        existing.size = data.size
+        existing.location = data.location
+        existing.trust_score = trust_result["trust_score"]
+        existing.verification_status = trust_result["verification_status"]
+        existing.domain_verified = trust_result["domain_verified"]
+        existing.website_verified = trust_result["website_verified"]
+        existing.linkedin_verified = trust_result["linkedin_verified"]
+        db.commit()
+        db.refresh(existing)
+        company = existing
+    else:
+        company = models.Company(
+            owner_id=current_user.id,
+            name=data.name,
+            about=data.about,
+            website=data.website,
+            linkedin_url=data.linkedin_url,
+            gst_number=data.gst_number,
+            industry=data.industry,
+            size=data.size,
+            location=data.location,
+            trust_score=trust_result["trust_score"],
+            verification_status=trust_result["verification_status"],
+            domain_verified=trust_result["domain_verified"],
+            website_verified=trust_result["website_verified"],
+            linkedin_verified=trust_result["linkedin_verified"],
+        )
+        db.add(company)
+        db.commit()
+        db.refresh(company)
 
     return {
         "company": {

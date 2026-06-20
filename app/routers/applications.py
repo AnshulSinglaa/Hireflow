@@ -83,16 +83,22 @@ async def apply_to_job(
 
         application.parsed_resume = json.dumps(parsed)
 
-        # Save embedding
+        # Save embedding — use a savepoint so failure doesn't corrupt the session
         if parsed and "error" not in parsed:
             try:
                 from app.ai.matcher import save_embedding
                 skills = " ".join(parsed.get("skills", []))
                 summary = parsed.get("summary", "")
+                savepoint = db.begin_nested()
                 save_embedding(application.id, f"{skills} {summary}", db)
+                savepoint.commit()
             except Exception as e:
                 print(f"EMBEDDING ERROR: {e}")
-                # non-fatal
+                try:
+                    savepoint.rollback()
+                except Exception:
+                    pass
+                # non-fatal — application still gets saved
 
         db.commit()  # single commit for everything
         db.refresh(application)

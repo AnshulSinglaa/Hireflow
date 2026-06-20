@@ -34,3 +34,6 @@ curl
 temp_*.txt
 temp_*.py
 docker-compose.override.yml
+
+# Testing folder (local E2E test data — not part of project)
+testing/

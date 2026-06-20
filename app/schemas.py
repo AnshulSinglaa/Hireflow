@@ -40,9 +40,23 @@ class JobResponse(BaseModel):
     company: str
     owner_id: int
     created_at: datetime
+    total_applications: int | None = 0
+    ats_passed: int | None = 0
+    ats_failed: int | None = 0
+    duplicates: int | None = 0
 
     class Config:
         from_attributes = True
+
+class PaginationMeta(BaseModel):
+    page: int
+    limit: int
+    total: int
+    pages: int
+
+class PaginatedJobsResponse(BaseModel):
+    jobs: list[JobResponse]
+    pagination: PaginationMeta
 
 # ── Applications ──────────────────────────────────────────────────────────────
 

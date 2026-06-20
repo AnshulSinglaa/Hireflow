@@ -97,7 +97,7 @@ def create_job(
 
 
 
-@router.get("/", response_model=list)
+@router.get("/", response_model=schemas.PaginatedJobsResponse)
 @rate_limit("60/minute")
 def get_jobs(
     request: Request,
@@ -108,12 +108,18 @@ def get_jobs(
     company: str = None,
     job_type: str = None,
     work_mode: str = None,
-    active_only: bool = True
+    active_only: bool = True,
+    recruiter_only: bool = False,
+    current_user: models.User = Depends(get_current_user)
 ):
     query = db.query(models.Job)
 
+    # filter by recruiter's own jobs
+    if recruiter_only and current_user:
+        query = query.filter(models.Job.owner_id == current_user.id)
+
     # filter inactive/flagged jobs
-    if active_only:
+    if active_only and not recruiter_only:
         query = query.filter(models.Job.is_active == True)
 
     # search by title or description
@@ -142,6 +148,13 @@ def get_jobs(
     jobs = query.order_by(
         models.Job.created_at.desc()
     ).offset(offset).limit(limit).all()
+
+    # annotate jobs with application stats
+    for j in jobs:
+        j.total_applications = db.query(models.Application).filter(models.Application.job_id == j.id).count()
+        j.ats_passed = db.query(models.Application).filter(models.Application.job_id == j.id, models.Application.status == 'ats_passed').count()
+        j.ats_failed = db.query(models.Application).filter(models.Application.job_id == j.id, models.Application.status == 'ats_failed').count()
+        j.duplicates = db.query(models.Application).filter(models.Application.job_id == j.id, models.Application.status == 'duplicate').count()
 
     # total count for frontend pagination
     total = query.count()

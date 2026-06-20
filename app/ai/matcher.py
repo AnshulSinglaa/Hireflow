@@ -29,14 +29,23 @@ async def get_embedding_async(text_input: str) -> list:
         lambda: model.encode(text_input).tolist()
     )
 
+def _cosine_similarity(a: list, b: list) -> float:
+    """Python-side cosine similarity between two embedding lists."""
+    va = np.array(a, dtype=np.float32)
+    vb = np.array(b, dtype=np.float32)
+    denom = np.linalg.norm(va) * np.linalg.norm(vb)
+    if denom == 0:
+        return 0.0
+    return float(np.dot(va, vb) / denom)
+
 def save_embedding(application_id: int, resume_text: str, db: Session):
-    """Call this once when resume is parsed — saves embedding to DB"""
-    embedding = get_embedding(resume_text)
+    """Save 384-dim embedding as JSON list to the application record."""
+    embedding = get_embedding(resume_text)   # Python list[float]
     app = db.query(models.Application).filter(
         models.Application.id == application_id
     ).first()
     if app:
-        app.embedding = embedding
+        app.embedding = embedding            # JSON column accepts Python list
         db.commit()
 
 
@@ -56,7 +65,6 @@ def is_duplicate_resume(
     application for the same job — different account, same resume.
     Returns True if duplicate found.
     """
-    # get this application's embedding
     current_app = db.query(models.Application).filter(
         models.Application.id == application_id
     ).first()
@@ -64,43 +72,51 @@ def is_duplicate_resume(
     if not current_app or current_app.embedding is None:
         return False
 
-    # find any other application for same job with
-    # cosine similarity above threshold
-    result = db.execute(text("""
-        SELECT id
-        FROM applications
-        WHERE job_id = :job_id
-          AND id != :app_id
-          AND embedding IS NOT NULL
-          AND 1 - (embedding <=> CAST(:embedding AS vector)) >= :threshold
-        LIMIT 1
-    """), {
-        "job_id": job_id,
-        "app_id": application_id,
-        "embedding": str(current_app.embedding),
-        "threshold": threshold
-    }).fetchone()
+    current_emb = current_app.embedding
+    if hasattr(current_emb, 'tolist'):
+        current_emb = current_emb.tolist()
 
-    return result is not None
+    # Fetch other applications for same job that have embeddings
+    others = db.query(models.Application).filter(
+        models.Application.job_id == job_id,
+        models.Application.id != application_id,
+        models.Application.embedding != None,
+    ).all()
+
+    for other in others:
+        emb = other.embedding
+        if emb is None:
+            continue
+        if hasattr(emb, 'tolist'):
+            emb = emb.tolist()
+        sim = _cosine_similarity(current_emb, emb)
+        if sim >= threshold:
+            return True
+    return False
 
 
 def semantic_search(job_embedding: list, job_id: int, db: Session) -> dict:
-    """pgvector cosine similarity search — returns {app_id: rank}"""
-    results = db.execute(text("""
-        SELECT id,
-               embedding <=> CAST(:embedding AS vector) AS distance
-        FROM applications
-        WHERE job_id = :job_id
-          AND embedding IS NOT NULL
-        ORDER BY distance ASC
-        LIMIT 50
-    """), {
-        "embedding": str(job_embedding),
-        "job_id": job_id
-    }).fetchall()
+    """Python-side cosine similarity search — returns {app_id: rank}"""
+    if hasattr(job_embedding, 'tolist'):
+        job_embedding = job_embedding.tolist()
 
-    # RRF scoring — rank 1 is best
-    return {row[0]: idx + 1 for idx, row in enumerate(results)}
+    apps = db.query(models.Application).filter(
+        models.Application.job_id == job_id,
+        models.Application.embedding != None,
+    ).all()
+
+    scored = []
+    for app in apps:
+        emb = app.embedding
+        if emb is None:
+            continue
+        if hasattr(emb, 'tolist'):
+            emb = emb.tolist()
+        sim = _cosine_similarity(job_embedding, emb)
+        scored.append((app.id, sim))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return {app_id: idx + 1 for idx, (app_id, _) in enumerate(scored[:50])}
 
 
 def bm25_search(job_keywords: list, job_id: int, db: Session) -> dict:

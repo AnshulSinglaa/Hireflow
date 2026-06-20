@@ -10,7 +10,7 @@ from app import models
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
-from app.limiter import limiter
+from app.limiter import limiter, DISABLE_RATE_LIMIT
 from app.routers import auth, jobs, applications, tasks, companies, reports, notifications, candidates
 
 
@@ -19,8 +19,13 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="HireFlow API", version="0.1.0")
 
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+# Only attach slowapi when rate limiting is active (skip during testing)
+if not DISABLE_RATE_LIMIT:
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+else:
+    import logging
+    logging.getLogger(__name__).warning("[TEST MODE] Rate limiting is DISABLED (DISABLE_RATE_LIMIT=1)")
 
 from datetime import datetime, timedelta
 
@@ -61,6 +66,8 @@ app.add_middleware(
         "http://127.0.0.1:5174",
         "http://127.0.0.1:5175",
         "http://127.0.0.1:5176",
+        # TODO: add your production frontend domain here before deploying
+        # e.g. "https://hireflow.vercel.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],

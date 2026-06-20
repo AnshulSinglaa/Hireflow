@@ -1,7 +1,6 @@
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, UniqueConstraint, JSON, Boolean, Float
 from datetime import datetime
 from app.database import Base
-from pgvector.sqlalchemy import Vector
 
 
 class User(Base):
@@ -109,7 +108,7 @@ class Application(Base):
     # shortlisted → interview_scheduled
     resume_path = Column(String, nullable=True)
     parsed_resume = Column(Text, nullable=True)
-    embedding = Column(Vector(384), nullable=True)
+    embedding = Column(JSON, nullable=True)      # 384-dim float list (JSONB in DB)
     ats_score = Column(Integer, nullable=True)
     ats_result = Column(Text, nullable=True)
     pipeline_score = Column(Integer, nullable=True)

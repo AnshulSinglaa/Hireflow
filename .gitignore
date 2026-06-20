@@ -12,6 +12,7 @@ mcp_config.json
 
 # Uploads (user files)
 uploads/
+uploads/resumes/
 
 # Virtual environment
 venv/
@@ -26,6 +27,10 @@ env/
 
 # Large dataset (local only)
 Resume/Resume.csv
+scripts/resume_dataset.csv
+scripts/*.csv
+scripts/tmp_resumes/
+*.csv
 
 # Bulk test artifacts
 scripts/temp_resume_*.pdf

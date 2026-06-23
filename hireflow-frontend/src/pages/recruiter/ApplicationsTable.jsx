@@ -57,6 +57,12 @@ export default function ApplicationsTable() {
   const perPage = 10
   const [renderTimestamp] = useState(() => Date.now())
 
+  // Filters
+  const [showFilters, setShowFilters] = useState(false)
+  const [minScore, setMinScore] = useState('')
+  const [minExperience, setMinExperience] = useState('')
+  const [skillSearch, setSkillSearch] = useState('')
+
   useEffect(() => {
     if (!token) {
       navigate('/login')
@@ -93,12 +99,28 @@ export default function ApplicationsTable() {
   }, [jobId, token, navigate])
 
   const filtered = applications.filter(a => {
-    if (activeTab === 'All')        return true
-    if (activeTab === 'Passed ATS') return a.status === 'ats_passed'
-    if (activeTab === 'Failed ATS') return a.status === 'ats_failed'
-    if (activeTab === 'Shortlisted') return a.status === 'shortlisted'
+    if (activeTab === 'Passed ATS' && a.status !== 'ats_passed') return false
+    if (activeTab === 'Failed ATS' && a.status !== 'ats_failed') return false
+    if (activeTab === 'Shortlisted' && a.status !== 'shortlisted') return false
+
+    if (minScore !== '' && (a.ats_score == null || a.ats_score < Number(minScore))) return false
+    if (minExperience !== '' && (a.experience_years == null || a.experience_years < Number(minExperience))) return false
+    if (skillSearch.trim() !== '') {
+      const term = skillSearch.trim().toLowerCase()
+      const hasSkill = (a.skills || []).some(s => s.toLowerCase().includes(term))
+      if (!hasSkill) return false
+    }
     return true
   })
+
+  const activeFilterCount = [minScore !== '', minExperience !== '', skillSearch.trim() !== ''].filter(Boolean).length
+
+  const clearFilters = () => {
+    setMinScore('')
+    setMinExperience('')
+    setSkillSearch('')
+    setPage(1)
+  }
 
   const tabCount = (tab) => {
     if (tab === 'All')        return applications.length
@@ -227,15 +249,78 @@ export default function ApplicationsTable() {
             {/* Top bar */}
             <div className="top-bar">
               <div />
-              <div style={{ display: 'flex', gap: 10 }}>
-                <button className="filter-btn">
+              <div style={{ display: 'flex', gap: 10, position: 'relative' }}>
+                <button className="filter-btn" onClick={() => setShowFilters(v => !v)} style={{ borderColor: activeFilterCount > 0 ? '#2563EB' : '#E2E8F0', color: activeFilterCount > 0 ? '#2563EB' : '#374151' }}>
                   <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
-                  Filters
+                  Filters{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}
                 </button>
-                <button className="export-btn" onClick={() => navigate(`/recruiter/jobs/${jobId}/download`)}>
+                <button className="export-btn" onClick={async () => {
+                  try {
+                    const res = await fetch(`${API}/jobs/${jobId}/download`, {
+                      headers: { Authorization: `Bearer ${token}` },
+                    })
+                    if (res.status === 401) { localStorage.clear(); navigate('/login'); return }
+                    if (!res.ok) {
+                      const err = await res.json().catch(() => ({}))
+                      alert(err.detail || 'No shortlisted or maybe candidates yet. Run the pipeline and make decisions first.')
+                      return
+                    }
+                    const blob = await res.blob()
+                    const url = window.URL.createObjectURL(blob)
+                    const a = document.createElement('a')
+                    a.href = url
+                    a.download = `hireflow_job_${jobId}_results.zip`
+                    document.body.appendChild(a)
+                    a.click()
+                    a.remove()
+                    window.URL.revokeObjectURL(url)
+                  } catch {
+                    alert('Download failed. Check your connection.')
+                  }
+                }}>
                   <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                   Export ZIP
                 </button>
+
+                {showFilters && (
+                  <div style={{
+                    position: 'absolute', top: 44, right: 0, width: 280, background: '#fff',
+                    border: '1px solid #E2E8F0', borderRadius: 10, boxShadow: '0 8px 24px rgba(0,0,0,0.08)',
+                    padding: 16, zIndex: 20,
+                  }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: '#0F172A', marginBottom: 12 }}>Filter Candidates</div>
+
+                    <label style={{ fontSize: 12, color: '#64748B', fontWeight: 600, display: 'block', marginBottom: 4 }}>Min ATS Score</label>
+                    <input
+                      type="number" min="0" max="100" placeholder="e.g. 60"
+                      value={minScore} onChange={e => { setMinScore(e.target.value); setPage(1) }}
+                      style={{ width: '100%', padding: '7px 10px', border: '1px solid #E2E8F0', borderRadius: 6, fontSize: 13, marginBottom: 12, boxSizing: 'border-box' }}
+                    />
+
+                    <label style={{ fontSize: 12, color: '#64748B', fontWeight: 600, display: 'block', marginBottom: 4 }}>Min Experience (years)</label>
+                    <input
+                      type="number" min="0" placeholder="e.g. 2"
+                      value={minExperience} onChange={e => { setMinExperience(e.target.value); setPage(1) }}
+                      style={{ width: '100%', padding: '7px 10px', border: '1px solid #E2E8F0', borderRadius: 6, fontSize: 13, marginBottom: 12, boxSizing: 'border-box' }}
+                    />
+
+                    <label style={{ fontSize: 12, color: '#64748B', fontWeight: 600, display: 'block', marginBottom: 4 }}>Skill Contains</label>
+                    <input
+                      type="text" placeholder="e.g. Python"
+                      value={skillSearch} onChange={e => { setSkillSearch(e.target.value); setPage(1) }}
+                      style={{ width: '100%', padding: '7px 10px', border: '1px solid #E2E8F0', borderRadius: 6, fontSize: 13, marginBottom: 14, boxSizing: 'border-box' }}
+                    />
+
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button onClick={clearFilters} style={{ flex: 1, padding: '7px 0', background: '#F1F5F9', border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 600, color: '#374151', cursor: 'pointer' }}>
+                        Clear
+                      </button>
+                      <button onClick={() => setShowFilters(false)} style={{ flex: 1, padding: '7px 0', background: '#2563EB', border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 600, color: '#fff', cursor: 'pointer' }}>
+                        Apply
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -291,9 +376,19 @@ export default function ApplicationsTable() {
                         <td><StatusBadge status={app.status} /></td>
                         <td style={{ color: '#94A3B8', fontSize: 12 }}>{timeAgo(app.created_at)}</td>
                         <td>
-                          <button className="view-btn" onClick={() => navigate(`/interview/${app.application_id}`)}>
-                            View
-                          </button>
+                          {app.status === 'rejected' || app.status === 'ats_failed' ? (
+                            <button className="view-btn" onClick={() => navigate(`/recruiter/jobs/${jobId}/candidates/${app.application_id}/feedback`)}>
+                              View Feedback
+                            </button>
+                          ) : app.status === 'shortlisted' || app.status === 'interview_scheduled' ? (
+                            <button className="view-btn" onClick={() => navigate(`/interview/${app.application_id}`)}>
+                              View / Schedule
+                            </button>
+                          ) : (
+                            <button className="view-btn" onClick={() => navigate(`/recruiter/jobs/${jobId}/candidates/${app.application_id}/feedback`)}>
+                              View Details
+                            </button>
+                          )}
                         </td>
                       </tr>
                     ))}

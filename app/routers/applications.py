@@ -107,15 +107,36 @@ async def apply_to_job(
         db.rollback()  # rollback everything if any step fails
         raise HTTPException(status_code=500, detail=f"Application failed: {str(e)}")
 
-    # ATS gate runs after commit — separate operation
+    # ATS gate runs after commit — separate operation.
+    # CRITICAL: never leave an application stuck on "pending" forever.
+    # If parsing failed earlier, or the gate itself throws (e.g. Groq
+    # timeout, malformed LLM response), explicitly mark it ats_failed
+    # so it's visible on the dashboard instead of silently vanishing.
     try:
         from app.ai.ats_gate import run_ats_gate
         from app.ai.ats_scorer import run_ats_soft_score
-        ats_result = run_ats_gate(application.id, job_id, db)
-        if ats_result["passed"]:
-            run_ats_soft_score(application.id, job_id, db)
+
+        if parsed and "error" in parsed:
+            # resume never parsed successfully — can't run real ATS logic
+            application.status = "ats_failed"
+            application.ats_result = json.dumps({
+                "passed": False,
+                "reason": "Resume could not be parsed (scanned/image PDF or extraction error)"
+            })
+            db.commit()
+        else:
+            ats_result = run_ats_gate(application.id, job_id, db)
+            if ats_result["passed"]:
+                run_ats_soft_score(application.id, job_id, db)
     except Exception as e:
         print(f"ATS ERROR: {e}")
+        # gate itself failed — still mark explicitly instead of leaving "pending"
+        application.status = "ats_failed"
+        application.ats_result = json.dumps({
+            "passed": False,
+            "reason": f"ATS processing error: {str(e)}"
+        })
+        db.commit()
 
     return application
 

@@ -147,15 +147,39 @@ export default function RecruiterDashboard() {
         },
         body: JSON.stringify({ question })
       })
+
+      if (res.status === 401) { localStorage.clear(); navigate('/login'); return }
+
+      if (!res.ok) {
+        let detail = `Request failed (${res.status}).`
+        try {
+          const errJson = await res.json()
+          detail = errJson.detail || detail
+        } catch { /* response wasn't JSON, keep default message */ }
+        setAnswer(detail)
+        return
+      }
+
+      if (!res.body) {
+        setAnswer('No response body received from server.')
+        return
+      }
+
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
+      let full = ''
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-        setAnswer(prev => prev + decoder.decode(value))
+        full += decoder.decode(value)
+        setAnswer(full)
       }
-    } catch {
-      setAnswer('Failed to get answer. Check connection.')
+
+      if (!full.trim()) {
+        setAnswer('The assistant returned an empty response. Try rephrasing your question.')
+      }
+    } catch (err) {
+      setAnswer('Failed to get answer. Check that the backend is running and reachable.')
     } finally {
       setAskLoading(false)
     }
@@ -201,7 +225,10 @@ export default function RecruiterDashboard() {
                 <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
               </svg>
             </button>
-            <div className="rd-avatar" onClick={handleLogout} title="Logout">R</div>
+            <div className="rd-avatar" onClick={() => navigate('/recruiter/company-setup')} title="Company Profile">R</div>
+            <button className="rd-notif-btn" onClick={handleLogout} title="Logout">
+              <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+            </button>
           </div>
         </nav>
 

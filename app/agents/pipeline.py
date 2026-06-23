@@ -32,6 +32,16 @@ def run_screener_agent(job_id: int, db: Session, candidate_ids: list = None) -> 
 
     for app in applications:
         if app.parsed_resume:
+            # exclude resumes that failed to parse (stored as {"error": ...})
+            # so they don't waste an LLM scoring call and pollute results
+            try:
+                parsed_check = json.loads(app.parsed_resume)
+            except Exception:
+                parsed_check = {"error": "unparseable"}
+            if isinstance(parsed_check, dict) and "error" in parsed_check:
+                skipped.append(app.id)
+                print(f"   [SCREENER] ⚠️ Application {app.id} — resume parse failed, skipping")
+                continue
             valid.append({
                 "application_id": app.id,
                 "candidate_id": app.candidate_id
@@ -55,12 +65,41 @@ def run_scorer_agent(screener_output: dict, db: Session) -> dict:
     print("\n[SCORER] Starting...")
     
     scores = []
+    scoring_errors = []
     for candidate in screener_output["valid_candidates"]:
         app_id = candidate["application_id"]
         print(f"   [SCORER] Scoring application {app_id}...")
-        result = score_candidate(app_id, db)
+
+        try:
+            result = score_candidate(app_id, db)
+        except Exception as e:
+            # isolate failures per-candidate — one Groq timeout/network error
+            # must not kill the entire pipeline for the remaining candidates
+            scoring_errors.append({"application_id": app_id, "error": str(e)})
+            print(f"   [SCORER] ❌ Application {app_id} — unexpected error: {e}")
+            continue
+
+        if "error" in result:
+            # scoring failed (LLM validation error, timeout, etc.) —
+            # do NOT silently treat as a 0 score / auto-reject.
+            # Skip from scoring entirely and record the failure.
+            scoring_errors.append({"application_id": app_id, "error": result["error"]})
+            print(f"   [SCORER] ❌ Application {app_id} — scoring failed: {result['error']}")
+            continue
+
         result["application_id"] = app_id
         scores.append(result)
+
+        # persist pipeline_score immediately so it survives even if a
+        # later agent (interview/email) fails for this specific candidate
+        if "total_score" in result:
+            application = db.query(models.Application).filter(
+                models.Application.id == app_id
+            ).first()
+            if application:
+                application.pipeline_score = result.get("total_score")
+                db.commit()
+
         print(f"   [SCORER] ✅ {result.get('candidate_name')} — {result.get('total_score')}/100")
 
     scores.sort(key=lambda x: x.get("total_score", 0), reverse=True)
@@ -69,13 +108,14 @@ def run_scorer_agent(screener_output: dict, db: Session) -> dict:
     maybe = [s for s in scores if 50 <= s.get("total_score", 0) < 70]
     rejected = [s for s in scores if s.get("total_score", 0) < 50]
 
-    print(f"   [SCORER] Done. {len(shortlisted)} shortlisted, {len(maybe)} maybe, {len(rejected)} rejected")
+    print(f"   [SCORER] Done. {len(shortlisted)} shortlisted, {len(maybe)} maybe, {len(rejected)} rejected, {len(scoring_errors)} errored")
     return {
         "job": screener_output["job"],
         "all_scores": scores,
         "shortlisted": shortlisted,
         "maybe": maybe,
-        "rejected": rejected
+        "rejected": rejected,
+        "scoring_errors": scoring_errors
     }
 
 # ─────────────────────────────────────────
@@ -120,12 +160,17 @@ Return ONLY a JSON object, no markdown, no backticks:
   ]
 }}"""
 
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=1000
-        )
+        response = None
+        try:
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=1000
+            )
+        except Exception as e:
+            print(f"   [INTERVIEW] ❌ LLM call failed for {candidate.get('candidate_name')}: {e}")
+            continue
 
         raw = response.choices[0].message.content.strip()
         try:
@@ -134,6 +179,22 @@ Return ONLY a JSON object, no markdown, no backticks:
             kit["candidate_name"] = candidate.get("candidate_name")
             kit["score"] = candidate.get("total_score")
             interview_kits.append(kit)
+
+            # persist interview kit onto the application row so the
+            # frontend can display it later without re-running the pipeline
+            application = db.query(models.Application).filter(
+                models.Application.id == candidate["application_id"]
+            ).first()
+            if application:
+                application.pipeline_result = json.dumps({
+                    "interview_kit": kit,
+                    "score_breakdown": candidate.get("breakdown"),
+                    "strengths": candidate.get("strengths"),
+                    "weaknesses": candidate.get("weaknesses"),
+                    "recommendation": candidate.get("recommendation"),
+                })
+                db.commit()
+
             print(f"   [INTERVIEW] ✅ Kit ready for {candidate.get('candidate_name')}")
         except json.JSONDecodeError:
             print(f"   [INTERVIEW] ⚠️ Could not parse questions for {candidate.get('candidate_name')}")
@@ -182,12 +243,17 @@ Rules:
 
 Return ONLY the email body, no subject line."""
 
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=400
-        )
+        response = None
+        try:
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=400
+            )
+        except Exception as e:
+            print(f"   [EMAIL] ❌ Shortlist email LLM call failed for {candidate.get('candidate_name')}: {e}")
+            continue
 
         email_body = response.choices[0].message.content.strip()
         
@@ -202,8 +268,19 @@ Return ONLY the email body, no subject line."""
                 "new_status": "shortlisted"
             }):
                 application.status = "shortlisted"
-                db.commit()
             guardrails.after_action("update_status")
+
+            # merge email body into existing pipeline_result (set by interview agent)
+            existing = {}
+            if application.pipeline_result:
+                try:
+                    existing = json.loads(application.pipeline_result)
+                except Exception:
+                    existing = {}
+            existing["email_body"] = email_body
+            existing["email_type"] = "shortlist"
+            application.pipeline_result = json.dumps(existing)
+            db.commit()
 
         emails_sent.append({
             "type": "shortlist",
@@ -235,12 +312,17 @@ Rules:
 
 Return ONLY the email body, no subject line."""
 
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=400
-        )
+        response = None
+        try:
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=400
+            )
+        except Exception as e:
+            print(f"   [EMAIL] ❌ Rejection email LLM call failed for {candidate.get('candidate_name')}: {e}")
+            continue
 
         email_body = response.choices[0].message.content.strip()
 
@@ -254,8 +336,24 @@ Return ONLY the email body, no subject line."""
                 "new_status": "rejected"
             }):
                 application.status = "rejected"
-                db.commit()
             guardrails.after_action("update_status")
+
+            # rejected candidates skip the interview agent, so build
+            # pipeline_result fresh here with score breakdown + email
+            existing = {}
+            if application.pipeline_result:
+                try:
+                    existing = json.loads(application.pipeline_result)
+                except Exception:
+                    existing = {}
+            existing["score_breakdown"] = candidate.get("breakdown")
+            existing["strengths"] = candidate.get("strengths")
+            existing["weaknesses"] = candidate.get("weaknesses")
+            existing["recommendation"] = candidate.get("recommendation")
+            existing["email_body"] = email_body
+            existing["email_type"] = "rejection"
+            application.pipeline_result = json.dumps(existing)
+            db.commit()
 
         emails_sent.append({
             "type": "rejection",
@@ -267,6 +365,34 @@ Return ONLY the email body, no subject line."""
         print(f"   [EMAIL] ✅ Rejection email ready for {candidate.get('candidate_name')}")
 
     print(f"   [EMAIL] Done. {len(emails_sent)} emails prepared")
+
+    # Maybe candidates — no email, but DO persist status + score breakdown
+    # so they don't silently stay stuck on their pre-pipeline status
+    for candidate in scorer_output["maybe"]:
+        application = db.query(models.Application).filter(
+            models.Application.id == candidate["application_id"]
+        ).first()
+        if application:
+            if guardrails.before_action("update_status", {
+                "application_id": candidate["application_id"],
+                "new_status": "maybe"
+            }):
+                application.status = "maybe"
+            guardrails.after_action("update_status")
+
+            existing = {}
+            if application.pipeline_result:
+                try:
+                    existing = json.loads(application.pipeline_result)
+                except Exception:
+                    existing = {}
+            existing["score_breakdown"] = candidate.get("breakdown")
+            existing["strengths"] = candidate.get("strengths")
+            existing["weaknesses"] = candidate.get("weaknesses")
+            existing["recommendation"] = candidate.get("recommendation")
+            application.pipeline_result = json.dumps(existing)
+            db.commit()
+
     return emails_sent
 
 # ─────────────────────────────────────────
@@ -313,12 +439,17 @@ Return ONLY a JSON object, no markdown, no backticks:
 
 health_score is 0-100: how healthy is this hiring pipeline?"""
 
-    response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0,
-        max_tokens=600
-    )
+    response = None
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=600
+        )
+    except Exception as e:
+        print(f"   [JD OPTIMIZER] ❌ LLM call failed: {e}")
+        return {"error": f"JD optimizer LLM call failed: {e}"}
 
     raw = response.choices[0].message.content.strip()
     try:
@@ -372,6 +503,7 @@ def run_full_pipeline(job_id: int, db: Session, dry_run: bool = False, candidate
             "shortlisted": len(scorer_output["shortlisted"]),
             "maybe": len(scorer_output["maybe"]),
             "rejected": len(scorer_output["rejected"]),
+            "scoring_errors": len(scorer_output.get("scoring_errors", [])),
             "emails_prepared": len(emails),
             "interview_kits": len(pipeline_output["interview_kits"])
         },
@@ -380,5 +512,7 @@ def run_full_pipeline(job_id: int, db: Session, dry_run: bool = False, candidate
         "emails": emails,
         "jd_analysis": jd_analysis,
         "scores": scorer_output["all_scores"],
+        "scoring_errors": scorer_output.get("scoring_errors", []),
+        "skipped_candidates": screener_output["skipped"],
         "guardrail_report": guardrails.get_report()
     }

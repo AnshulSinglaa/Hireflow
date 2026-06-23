@@ -14,6 +14,7 @@ import PipelineProgress   from './pages/recruiter/PipelineProgress'
 import Analytics          from './pages/recruiter/Analytics'
 import CompanySetup       from './pages/recruiter/CompanySetup'
 import ScheduleInterview  from './pages/recruiter/ScheduleInterview'
+import CandidateFeedback  from './pages/recruiter/CandidateFeedback'
 
 // ── Candidate ─────────────────────────────────────────
 import CandidateDashboard from './pages/candidate/CandidateDashboard'
@@ -60,6 +61,7 @@ function App() {
         <Route path="/recruiter/jobs/:jobId/applications"                           element={<ApplicationsTable />} />
         <Route path="/recruiter/jobs/:jobId/results"                                element={<PipelineResults />} />
         <Route path="/recruiter/jobs/:jobId/candidates/:candidateId/schedule"       element={<ScheduleInterview />} />
+        <Route path="/recruiter/jobs/:jobId/candidates/:applicationId/feedback"      element={<CandidateFeedback />} />
         <Route path="/recruiter/analytics"                                          element={<Analytics />} />
       </Routes>
     </BrowserRouter>

@@ -495,6 +495,74 @@ def compare_two_candidates(
     return compare_candidates(candidate_a, candidate_b, job_id, db)
 
 
+@router.get("/{job_id}/candidates/{application_id}/feedback")
+@rate_limit("30/minute")
+def get_candidate_feedback(
+    request: Request,
+    job_id: int,
+    application_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    """
+    Returns the persisted pipeline result for one candidate —
+    score breakdown, strengths/weaknesses, interview kit (if shortlisted),
+    and the generated email body. Works for any pipeline-processed status
+    (shortlisted / maybe / rejected).
+    """
+    if current_user.role != "recruiter":
+        raise HTTPException(status_code=403, detail="Only recruiters")
+
+    job = db.query(models.Job).filter(models.Job.id == job_id).first()
+    if not job or job.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    application = db.query(models.Application).filter(
+        models.Application.id == application_id,
+        models.Application.job_id == job_id
+    ).first()
+    if not application:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    parsed = {}
+    if application.parsed_resume:
+        try:
+            parsed = json.loads(application.parsed_resume)
+        except Exception:
+            pass
+
+    pipeline_result = {}
+    if application.pipeline_result:
+        try:
+            pipeline_result = json.loads(application.pipeline_result)
+        except Exception:
+            pass
+
+    ats_result = {}
+    if application.ats_result:
+        try:
+            ats_result = json.loads(application.ats_result)
+        except Exception:
+            pass
+
+    return {
+        "application_id": application.id,
+        "status": application.status,
+        "candidate_name": parsed.get("name", "Unknown"),
+        "ats_score": application.ats_score,
+        "pipeline_score": application.pipeline_score,
+        "ats_result": ats_result,
+        "score_breakdown": pipeline_result.get("score_breakdown"),
+        "strengths": pipeline_result.get("strengths"),
+        "weaknesses": pipeline_result.get("weaknesses"),
+        "recommendation": pipeline_result.get("recommendation"),
+        "interview_kit": pipeline_result.get("interview_kit"),
+        "email_body": pipeline_result.get("email_body"),
+        "email_type": pipeline_result.get("email_type"),
+        "has_pipeline_result": bool(application.pipeline_result),
+    }
+
+
 @router.post("/{job_id}/candidates/{application_id}/decision")
 @rate_limit("20/minute")
 def make_candidate_decision(

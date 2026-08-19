@@ -116,6 +116,7 @@ export default function Jobs() {
   const [totalPages, setTotalPages] = useState(1)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [slowWake, setSlowWake] = useState(false)
   const navigate = useNavigate()
   const limit = 10
 
@@ -172,8 +173,11 @@ export default function Jobs() {
   }
 
   useEffect(() => {
-    fetchJobs()
+    setSlowWake(false)
+    const wakeTimer = setTimeout(() => setSlowWake(true), 4000)
+    fetchJobs().finally(() => clearTimeout(wakeTimer))
     fetchAppliedJobs()
+    return () => clearTimeout(wakeTimer)
   }, [page, filters])
 
   const handleSearch = (e) => {
@@ -404,7 +408,7 @@ export default function Jobs() {
           {loading ? (
             <div className="state-box">
               <div style={{ width: 32, height: 32, border: '3px solid #E2E8F0', borderTopColor: '#2563EB', borderRadius: '50%', animation: 'spin 0.7s linear infinite', margin: '0 auto 12px' }} />
-              Loading jobs…
+              {slowWake ? 'Waking up the server — this can take up to 50s on first load…' : 'Loading jobs…'}
               <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
             </div>
           ) : error ? (

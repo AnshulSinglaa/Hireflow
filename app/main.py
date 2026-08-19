@@ -71,9 +71,10 @@ app.add_middleware(
         "http://127.0.0.1:5174",
         "http://127.0.0.1:5175",
         "http://127.0.0.1:5176",
-        # add production frontend domain here before deploying
-        # e.g. "https://hireflow.vercel.app",
     ],
+    # Matches any Vercel preview/production URL for this project
+    # (e.g. https://hireflow-xyz.vercel.app, https://hireflow-git-main-user.vercel.app)
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Request-ID"],

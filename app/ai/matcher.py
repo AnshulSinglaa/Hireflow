@@ -6,17 +6,24 @@ from sqlalchemy import text
 from app import models
 from app.ai.parser import clean_placeholder_name
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
-
-
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
 _executor = ThreadPoolExecutor(max_workers=2)
 
+_model = None
+
+def _get_model():
+    """Lazy-load the embedding model on first use, not at import time.
+    Keeps startup memory low (important on memory-capped deploys)."""
+    global _model
+    if _model is None:
+        _model = SentenceTransformer("all-MiniLM-L6-v2")
+    return _model
+
 def get_embedding(text_input: str) -> list:
     """Synchronous version — use in non-async contexts"""
-    return model.encode(text_input).tolist()
+    return _get_model().encode(text_input).tolist()
 
 async def get_embedding_async(text_input: str) -> list:
     """
@@ -26,7 +33,7 @@ async def get_embedding_async(text_input: str) -> list:
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         _executor,
-        lambda: model.encode(text_input).tolist()
+        lambda: _get_model().encode(text_input).tolist()
     )
 
 def _cosine_similarity(a: list, b: list) -> float:

@@ -1,19 +1,18 @@
 import json
 import os
-from groq import Groq
 from sqlalchemy.orm import Session
 from app import models
 from app.ai.scorer import score_candidate
 from app.agents.guardrails import AgentGuardrails
+from app.ai.groq_client import groq_with_retry  # Fix 2: no more raw client calls
 
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 # ─────────────────────────────────────────
 # AGENT 1 — SCREENER
 # ─────────────────────────────────────────
 def run_screener_agent(job_id: int, db: Session, candidate_ids: list = None) -> dict:
     print("\n[SCREENER] Starting...")
-    
+
     job = db.query(models.Job).filter(models.Job.id == job_id).first()
     if not job:
         return {"error": "Job not found", "candidates": []}
@@ -21,19 +20,15 @@ def run_screener_agent(job_id: int, db: Session, candidate_ids: list = None) -> 
     query = db.query(models.Application).filter(
         models.Application.job_id == job_id
     )
-    # if ATS threshold provided a candidate list, restrict to those only
     if candidate_ids:
         query = query.filter(models.Application.id.in_(candidate_ids))
 
     applications = query.all()
-
     valid = []
     skipped = []
 
     for app in applications:
         if app.parsed_resume:
-            # exclude resumes that failed to parse (stored as {"error": ...})
-            # so they don't waste an LLM scoring call and pollute results
             try:
                 parsed_check = json.loads(app.parsed_resume)
             except Exception:
@@ -58,14 +53,16 @@ def run_screener_agent(job_id: int, db: Session, candidate_ids: list = None) -> 
         "skipped": skipped
     }
 
+
 # ─────────────────────────────────────────
 # AGENT 2 — SCORER
 # ─────────────────────────────────────────
 def run_scorer_agent(screener_output: dict, db: Session) -> dict:
     print("\n[SCORER] Starting...")
-    
+
     scores = []
     scoring_errors = []
+
     for candidate in screener_output["valid_candidates"]:
         app_id = candidate["application_id"]
         print(f"   [SCORER] Scoring application {app_id}...")
@@ -73,16 +70,11 @@ def run_scorer_agent(screener_output: dict, db: Session) -> dict:
         try:
             result = score_candidate(app_id, db)
         except Exception as e:
-            # isolate failures per-candidate — one Groq timeout/network error
-            # must not kill the entire pipeline for the remaining candidates
             scoring_errors.append({"application_id": app_id, "error": str(e)})
             print(f"   [SCORER] ❌ Application {app_id} — unexpected error: {e}")
             continue
 
         if "error" in result:
-            # scoring failed (LLM validation error, timeout, etc.) —
-            # do NOT silently treat as a 0 score / auto-reject.
-            # Skip from scoring entirely and record the failure.
             scoring_errors.append({"application_id": app_id, "error": result["error"]})
             print(f"   [SCORER] ❌ Application {app_id} — scoring failed: {result['error']}")
             continue
@@ -90,8 +82,6 @@ def run_scorer_agent(screener_output: dict, db: Session) -> dict:
         result["application_id"] = app_id
         scores.append(result)
 
-        # persist pipeline_score immediately so it survives even if a
-        # later agent (interview/email) fails for this specific candidate
         if "total_score" in result:
             application = db.query(models.Application).filter(
                 models.Application.id == app_id
@@ -103,12 +93,12 @@ def run_scorer_agent(screener_output: dict, db: Session) -> dict:
         print(f"   [SCORER] ✅ {result.get('candidate_name')} — {result.get('total_score')}/100")
 
     scores.sort(key=lambda x: x.get("total_score", 0), reverse=True)
-    
+
     shortlisted = [s for s in scores if s.get("total_score", 0) >= 70]
     maybe = [s for s in scores if 50 <= s.get("total_score", 0) < 70]
     rejected = [s for s in scores if s.get("total_score", 0) < 50]
 
-    print(f"   [SCORER] Done. {len(shortlisted)} shortlisted, {len(maybe)} maybe, {len(rejected)} rejected, {len(scoring_errors)} errored")
+    print(f"   [SCORER] Done. {len(shortlisted)} shortlisted, {len(maybe)} maybe, {len(rejected)} rejected")
     return {
         "job": screener_output["job"],
         "all_scores": scores,
@@ -118,18 +108,22 @@ def run_scorer_agent(screener_output: dict, db: Session) -> dict:
         "scoring_errors": scoring_errors
     }
 
+
 # ─────────────────────────────────────────
 # AGENT 3 — INTERVIEW QUESTION GENERATOR
 # ─────────────────────────────────────────
 def run_interview_agent(scorer_output: dict, db: Session) -> dict:
     print("\n[INTERVIEW AGENT] Starting...")
-    
+
     job = scorer_output["job"]
     interview_kits = []
 
-    for candidate in scorer_output["shortlisted"]:
+    # Fix 3 note: shortlisted + maybe both get interview kits now
+    candidates_for_interview = scorer_output["shortlisted"] + scorer_output["maybe"]
+
+    for candidate in candidates_for_interview:
         print(f"   [INTERVIEW] Generating questions for {candidate.get('candidate_name')}...")
-        
+
         prompt = f"""You are a senior technical interviewer preparing for a candidate interview.
 
 Job: {job['title']}
@@ -160,9 +154,9 @@ Return ONLY a JSON object, no markdown, no backticks:
   ]
 }}"""
 
-        response = None
         try:
-            response = client.chat.completions.create(
+            # Fix 2: groq_with_retry instead of client.chat.completions.create
+            response = groq_with_retry(
                 model="llama-3.3-70b-versatile",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
@@ -180,8 +174,6 @@ Return ONLY a JSON object, no markdown, no backticks:
             kit["score"] = candidate.get("total_score")
             interview_kits.append(kit)
 
-            # persist interview kit onto the application row so the
-            # frontend can display it later without re-running the pipeline
             application = db.query(models.Application).filter(
                 models.Application.id == candidate["application_id"]
             ).first()
@@ -206,12 +198,13 @@ Return ONLY a JSON object, no markdown, no backticks:
         "interview_kits": interview_kits
     }
 
+
 # ─────────────────────────────────────────
 # AGENT 4 — EMAIL AGENT
 # ─────────────────────────────────────────
 def run_email_agent(pipeline_output: dict, db: Session, guardrails: AgentGuardrails) -> dict:
     print("\n[EMAIL AGENT] Starting...")
-    
+
     job = pipeline_output["job"]
     scorer_output = pipeline_output["scorer_output"]
     interview_kits = {kit["application_id"]: kit for kit in pipeline_output["interview_kits"]}
@@ -221,7 +214,7 @@ def run_email_agent(pipeline_output: dict, db: Session, guardrails: AgentGuardra
     for candidate in scorer_output["shortlisted"]:
         app_id = candidate["application_id"]
         kit = interview_kits.get(app_id, {})
-        
+
         questions_text = ""
         for i, q in enumerate(kit.get("questions", []), 1):
             questions_text += f"\n{i}. {q['question']}"
@@ -243,9 +236,9 @@ Rules:
 
 Return ONLY the email body, no subject line."""
 
-        response = None
         try:
-            response = client.chat.completions.create(
+            # Fix 2: groq_with_retry instead of client.chat.completions.create
+            response = groq_with_retry(
                 model="llama-3.3-70b-versatile",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.7,
@@ -256,13 +249,11 @@ Return ONLY the email body, no subject line."""
             continue
 
         email_body = response.choices[0].message.content.strip()
-        
-        # Save to DB as mock email
+
         application = db.query(models.Application).filter(
             models.Application.id == app_id
         ).first()
         if application:
-            # Before updating status
             if guardrails.before_action("update_status", {
                 "application_id": app_id,
                 "new_status": "shortlisted"
@@ -270,7 +261,6 @@ Return ONLY the email body, no subject line."""
                 application.status = "shortlisted"
             guardrails.after_action("update_status")
 
-            # merge email body into existing pipeline_result (set by interview agent)
             existing = {}
             if application.pipeline_result:
                 try:
@@ -312,9 +302,9 @@ Rules:
 
 Return ONLY the email body, no subject line."""
 
-        response = None
         try:
-            response = client.chat.completions.create(
+            # Fix 2: groq_with_retry instead of client.chat.completions.create
+            response = groq_with_retry(
                 model="llama-3.3-70b-versatile",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.7,
@@ -330,7 +320,6 @@ Return ONLY the email body, no subject line."""
             models.Application.id == candidate["application_id"]
         ).first()
         if application:
-            # Before updating status
             if guardrails.before_action("update_status", {
                 "application_id": candidate["application_id"],
                 "new_status": "rejected"
@@ -338,8 +327,6 @@ Return ONLY the email body, no subject line."""
                 application.status = "rejected"
             guardrails.after_action("update_status")
 
-            # rejected candidates skip the interview agent, so build
-            # pipeline_result fresh here with score breakdown + email
             existing = {}
             if application.pipeline_result:
                 try:
@@ -364,10 +351,8 @@ Return ONLY the email body, no subject line."""
         })
         print(f"   [EMAIL] ✅ Rejection email ready for {candidate.get('candidate_name')}")
 
-    print(f"   [EMAIL] Done. {len(emails_sent)} emails prepared")
-
-    # Maybe candidates — no email, but DO persist status + score breakdown
-    # so they don't silently stay stuck on their pre-pipeline status
+    # Maybe candidates — status + breakdown only, no email
+    # Fix 9 (medium): pipeline report now explicitly notes why no email was sent
     for candidate in scorer_output["maybe"]:
         application = db.query(models.Application).filter(
             models.Application.id == candidate["application_id"]
@@ -390,20 +375,24 @@ Return ONLY the email body, no subject line."""
             existing["strengths"] = candidate.get("strengths")
             existing["weaknesses"] = candidate.get("weaknesses")
             existing["recommendation"] = candidate.get("recommendation")
+            existing["email_type"] = "none"
+            existing["email_note"] = "Maybe candidates are not emailed automatically. Recruiter decision required."
             application.pipeline_result = json.dumps(existing)
             db.commit()
 
+    print(f"   [EMAIL] Done. {len(emails_sent)} emails prepared")
     return emails_sent
+
 
 # ─────────────────────────────────────────
 # AGENT 5 — JD OPTIMIZER
 # ─────────────────────────────────────────
 def run_jd_optimizer(scorer_output: dict, db: Session) -> dict:
     print("\n[JD OPTIMIZER] Starting...")
-    
+
     job = scorer_output["job"]
     all_scores = scorer_output["all_scores"]
-    
+
     if not all_scores:
         return {"suggestion": "No candidates to analyze yet"}
 
@@ -439,9 +428,9 @@ Return ONLY a JSON object, no markdown, no backticks:
 
 health_score is 0-100: how healthy is this hiring pipeline?"""
 
-    response = None
     try:
-        response = client.chat.completions.create(
+        # Fix 2: groq_with_retry instead of client.chat.completions.create
+        response = groq_with_retry(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
@@ -459,6 +448,7 @@ health_score is 0-100: how healthy is this hiring pipeline?"""
     except json.JSONDecodeError:
         return {"raw": raw, "error": "Could not parse"}
 
+
 # ─────────────────────────────────────────
 # COORDINATOR — runs the full pipeline
 # ─────────────────────────────────────────
@@ -471,25 +461,18 @@ def run_full_pipeline(job_id: int, db: Session, dry_run: bool = False, candidate
         print(f"🎯 ATS-filtered: {len(candidate_ids)} candidate(s) in pipeline")
     print(f"{'='*50}")
 
+    # Fix 5: require_approval always False — input() removed from guardrails
     guardrails = AgentGuardrails(dry_run=dry_run, require_approval=False)
 
-    # Step 1 — Screen (restricted to ATS-qualified candidates if provided)
     screener_output = run_screener_agent(job_id, db, candidate_ids=candidate_ids)
     if screener_output.get("error"):
         return {"error": screener_output["error"]}
     if not screener_output["valid_candidates"]:
         return {"message": "No valid candidates found", "skipped": screener_output["skipped"]}
 
-    # Step 2 — Score
     scorer_output = run_scorer_agent(screener_output, db)
-
-    # Step 3 — Generate interview questions
     pipeline_output = run_interview_agent(scorer_output, db)
-
-    # Step 4 — Prepare emails
     emails = run_email_agent(pipeline_output, db, guardrails)
-
-    # Step 5 — Optimize JD
     jd_analysis = run_jd_optimizer(scorer_output, db)
 
     print(f"\n{'='*50}")
@@ -505,7 +488,8 @@ def run_full_pipeline(job_id: int, db: Session, dry_run: bool = False, candidate
             "rejected": len(scorer_output["rejected"]),
             "scoring_errors": len(scorer_output.get("scoring_errors", [])),
             "emails_prepared": len(emails),
-            "interview_kits": len(pipeline_output["interview_kits"])
+            "interview_kits": len(pipeline_output["interview_kits"]),
+            "maybe_note": "Maybe candidates were not emailed automatically — recruiter decision required."
         },
         "shortlisted_candidates": scorer_output["shortlisted"],
         "interview_kits": pipeline_output["interview_kits"],

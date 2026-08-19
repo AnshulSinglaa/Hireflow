@@ -1,13 +1,8 @@
 import json
-from typing import Callable
-
-# ─────────────────────────────────────────
-# GUARDRAIL RULES
-# ─────────────────────────────────────────
 
 IRREVERSIBLE_ACTIONS = [
     "send_email",
-    "reject_candidate", 
+    "reject_candidate",
     "delete_application",
     "update_status"
 ]
@@ -21,9 +16,9 @@ class GuardrailViolation(Exception):
     pass
 
 class AgentGuardrails:
-    def __init__(self, dry_run: bool = False, require_approval: bool = True):
+    def __init__(self, dry_run: bool = False, require_approval: bool = False):
         self.dry_run = dry_run
-        self.require_approval = require_approval
+        self.require_approval = require_approval  # always False in production — input() removed
         self.actions_taken = []
         self.emails_sent = 0
         self.api_calls = 0
@@ -40,14 +35,9 @@ class AgentGuardrails:
             )
 
     def before_action(self, action_name: str, action_details: dict) -> bool:
-        print(f"\n[GUARDRAIL] Checking action: {action_name}")
-
-        # Rate limit check
         self.check_rate_limits()
 
-        # Dry run mode — simulate but never execute
         if self.dry_run:
-            print(f"[GUARDRAIL] DRY RUN — would execute: {action_name}({action_details})")
             self.actions_taken.append({
                 "action": action_name,
                 "details": action_details,
@@ -56,22 +46,8 @@ class AgentGuardrails:
             })
             return False
 
-        # Human in the loop for irreversible actions
-        if action_name in IRREVERSIBLE_ACTIONS and self.require_approval:
-            print(f"\n⚠️  HUMAN APPROVAL REQUIRED")
-            print(f"   Action: {action_name}")
-            print(f"   Details: {json.dumps(action_details, indent=2)}")
-            
-            approval = input("   Approve? (y/n): ").strip().lower()
-            
-            if approval != "y":
-                print(f"[GUARDRAIL] ❌ Action rejected by human")
-                self.violations.append({
-                    "action": action_name,
-                    "reason": "rejected_by_human"
-                })
-                return False
-
+        # require_approval is always False in production
+        # human-in-the-loop via webhook is handled at the API layer, not here
         self.actions_taken.append({
             "action": action_name,
             "details": action_details,

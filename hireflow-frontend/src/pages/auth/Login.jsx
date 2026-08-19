@@ -29,6 +29,12 @@ export default function Login() {
         setError(data.detail || 'Invalid credentials.')
         return
       }
+      if (data.role && data.role !== role) {
+        setError(
+          `This account is registered as a ${data.role}. Please switch to the "${data.role.charAt(0).toUpperCase() + data.role.slice(1)}" tab to log in.`
+        )
+        return
+      }
       localStorage.setItem('token', data.access_token)
       localStorage.setItem('role', data.role || role)
       navigate('/dashboard')

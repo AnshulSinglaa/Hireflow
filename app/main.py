@@ -1,5 +1,13 @@
 from dotenv import load_dotenv
-load_dotenv()  # This MUST be the first thing that runs
+load_dotenv()
+
+import os
+import sys
+
+# Fix 7: hard fail at startup if SECRET_KEY is missing — no fallback
+if not os.getenv("SECRET_KEY"):
+    print("FATAL: SECRET_KEY environment variable is not set. Refusing to start.")
+    sys.exit(1)
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -13,25 +21,21 @@ from slowapi.errors import RateLimitExceeded
 from app.limiter import limiter, DISABLE_RATE_LIMIT
 from app.routers import auth, jobs, applications, tasks, companies, reports, notifications, candidates
 
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="HireFlow API", version="0.1.0")
 
-# Only attach slowapi when rate limiting is active (skip during testing)
 if not DISABLE_RATE_LIMIT:
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 else:
-    import logging
     logging.getLogger(__name__).warning("[TEST MODE] Rate limiting is DISABLED (DISABLE_RATE_LIMIT=1)")
 
 from datetime import datetime, timedelta
 
 @app.on_event("startup")
 async def cleanup_old_memory():
-    """Delete agent memory older than 30 days on startup"""
     from app.database import SessionLocal
     db = SessionLocal()
     try:
@@ -56,6 +60,7 @@ async def add_request_id(request: Request, call_next):
     response.headers["X-Request-ID"] = request_id
     return response
 
+# Fix 6: enumerate exact methods and headers — no wildcards with credentials
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -66,12 +71,12 @@ app.add_middleware(
         "http://127.0.0.1:5174",
         "http://127.0.0.1:5175",
         "http://127.0.0.1:5176",
-        # TODO: add your production frontend domain here before deploying
+        # add production frontend domain here before deploying
         # e.g. "https://hireflow.vercel.app",
     ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
 )
 
 @app.exception_handler(Exception)
@@ -97,7 +102,6 @@ def read_root():
 
 @app.get("/health")
 def health_check():
-    import os
     from app.database import check_db_connection
     db_ok = check_db_connection()
     groq_ok = bool(os.getenv("GROQ_API_KEY"))
@@ -107,6 +111,7 @@ def health_check():
         "groq": "configured" if groq_ok else "missing key",
         "version": "0.1.0"
     }
+
 @app.get("/observability")
 def get_observability():
     return {

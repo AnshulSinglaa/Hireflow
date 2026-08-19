@@ -59,8 +59,6 @@ def create_job(
     db.commit()
     db.refresh(new_job)
 
-    # run ATS parsing + fraud scan in background
-    # recruiter gets instant response
     job_id = new_job.id
 
     def run_job_analysis(job_id: int):
@@ -90,11 +88,10 @@ def create_job(
             print(f"[JOB ANALYSIS] Failed for job {job_id}: {e}")
             bg_db.rollback()
         finally:
-            bg_db.close()  # Fix 6 — new session per background task
+            bg_db.close()
 
     background_tasks.add_task(run_job_analysis, job_id)
     return new_job
-
 
 
 @router.get("/", response_model=schemas.PaginatedJobsResponse)
@@ -114,49 +111,40 @@ def get_jobs(
 ):
     query = db.query(models.Job)
 
-    # filter by recruiter's own jobs
     if recruiter_only and current_user:
         query = query.filter(models.Job.owner_id == current_user.id)
 
-    # filter inactive/flagged jobs
     if active_only and not recruiter_only:
         query = query.filter(models.Job.is_active == True)
 
-    # search by title or description
     if search:
         query = query.filter(
             models.Job.title.ilike(f"%{search}%") |
             models.Job.description.ilike(f"%{search}%")
         )
 
-    # filter by company
     if company:
         query = query.filter(
             models.Job.company.ilike(f"%{company}%")
         )
 
-    # filter by job type
     if job_type:
         query = query.filter(models.Job.job_type == job_type)
 
-    # filter by work mode
     if work_mode:
         query = query.filter(models.Job.work_mode == work_mode)
 
-    # pagination
     offset = (page - 1) * limit
     jobs = query.order_by(
         models.Job.created_at.desc()
     ).offset(offset).limit(limit).all()
 
-    # annotate jobs with application stats
     for j in jobs:
         j.total_applications = db.query(models.Application).filter(models.Application.job_id == j.id).count()
         j.ats_passed = db.query(models.Application).filter(models.Application.job_id == j.id, models.Application.status == 'ats_passed').count()
         j.ats_failed = db.query(models.Application).filter(models.Application.job_id == j.id, models.Application.status == 'ats_failed').count()
         j.duplicates = db.query(models.Application).filter(models.Application.job_id == j.id, models.Application.status == 'duplicate').count()
 
-    # total count for frontend pagination
     total = query.count()
 
     return {
@@ -272,6 +260,7 @@ def match_job_candidates(
     results = match_candidates(job_id, db)
     return results
 
+
 @router.post("/{job_id}/ask")
 @rate_limit("10/minute")
 def ask_job_candidates(
@@ -346,14 +335,17 @@ def screen_job_candidates(
     result = run_screening_agent(job_id, db)
     return result
 
+
 @router.post("/{job_id}/pipeline")
 @rate_limit("5/minute")
 def run_job_pipeline(
     request: Request,
     job_id: int,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
+    # Fix 1: sync pipeline removed — all runs are async now
     if current_user.role != "recruiter":
         raise HTTPException(status_code=403, detail="Only recruiters can run the pipeline")
 
@@ -364,19 +356,19 @@ def run_job_pipeline(
     if job.owner_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    # get only ATS-qualified candidates
-    from app.ai.ats_threshold import get_pipeline_candidates
-    candidate_ids = get_pipeline_candidates(job_id, db)
+    task_id = str(uuid.uuid4())
+    task = models.TaskStatus(id=task_id, status="pending")
+    db.add(task)
+    db.commit()
 
-    if not candidate_ids:
-        return {
-            "message": "No candidates passed ATS gate",
-            "pipeline_ran": False,
-            "suggestion": "Lower ATS threshold or check job criteria"
-        }
+    background_tasks.add_task(run_pipeline_task, task_id, job_id)
 
-    result = run_full_pipeline(job_id, db, candidate_ids=candidate_ids)
-    return result
+    return {
+        "task_id": task_id,
+        "status": "pending",
+        "message": f"Pipeline started asynchronously. Poll GET /tasks/{task_id} for results"
+    }
+
 
 @router.get("/{job_id}/ats-summary")
 @rate_limit("30/minute")
@@ -420,6 +412,7 @@ def run_job_pipeline_dry_run(
 
     result = run_full_pipeline(job_id, db, dry_run=True)
     return result
+
 
 @router.post("/{job_id}/pipeline/async")
 @rate_limit("5/minute")
@@ -504,12 +497,6 @@ def get_candidate_feedback(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    """
-    Returns the persisted pipeline result for one candidate —
-    score breakdown, strengths/weaknesses, interview kit (if shortlisted),
-    and the generated email body. Works for any pipeline-processed status
-    (shortlisted / maybe / rejected).
-    """
     if current_user.role != "recruiter":
         raise HTTPException(status_code=403, detail="Only recruiters")
 
@@ -559,6 +546,7 @@ def get_candidate_feedback(
         "interview_kit": pipeline_result.get("interview_kit"),
         "email_body": pipeline_result.get("email_body"),
         "email_type": pipeline_result.get("email_type"),
+        "email_note": pipeline_result.get("email_note"),  # Fix 9: maybe note visible to recruiter
         "has_pipeline_result": bool(application.pipeline_result),
     }
 
@@ -569,7 +557,7 @@ def make_candidate_decision(
     request: Request,
     job_id: int,
     application_id: int,
-    decision: str,  # shortlisted / rejected / maybe
+    decision: str,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
@@ -593,7 +581,6 @@ def make_candidate_decision(
     if not application:
         raise HTTPException(status_code=404, detail="Application not found")
 
-    # get candidate info for email
     candidate = db.query(models.User).filter(
         models.User.id == application.candidate_id
     ).first()
@@ -610,11 +597,9 @@ def make_candidate_decision(
     )
     candidate_email = candidate.email if candidate else None
 
-    # update status
     application.status = decision
     db.commit()
 
-    # create in-app notification
     from app.email_service import (
         send_shortlisted_email,
         send_rejected_email,
@@ -622,7 +607,6 @@ def make_candidate_decision(
     )
 
     if decision == "shortlisted":
-        # notification
         create_notification(
             user_id=application.candidate_id,
             type="shortlisted",
@@ -632,7 +616,6 @@ def make_candidate_decision(
             related_job_id=job_id,
             related_application_id=application_id
         )
-        # email
         if candidate_email:
             send_shortlisted_email(
                 candidate_email=candidate_email,
@@ -642,7 +625,6 @@ def make_candidate_decision(
             )
 
     elif decision == "rejected":
-        # get rejection reason from pipeline result
         reason = None
         tips = []
         if application.pipeline_result:
@@ -653,7 +635,6 @@ def make_candidate_decision(
             except Exception:
                 pass
 
-        # notification
         create_notification(
             user_id=application.candidate_id,
             type="rejected",
@@ -663,7 +644,6 @@ def make_candidate_decision(
             related_job_id=job_id,
             related_application_id=application_id
         )
-        # email
         if candidate_email:
             send_rejected_email(
                 candidate_email=candidate_email,
@@ -675,7 +655,6 @@ def make_candidate_decision(
             )
 
     elif decision == "maybe":
-        # notification only — no email for maybe
         create_notification(
             user_id=application.candidate_id,
             type="under_review",
@@ -703,10 +682,6 @@ def bulk_decision(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    """
-    Approve all candidates above min_score threshold.
-    Recruiter sets score cutoff — bulk action.
-    """
     if current_user.role != "recruiter":
         raise HTTPException(status_code=403, detail="Only recruiters")
 
@@ -714,7 +689,6 @@ def bulk_decision(
     if not job or job.owner_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    # get all pipeline-processed applications
     applications = db.query(models.Application).filter(
         models.Application.job_id == job_id,
         models.Application.pipeline_score != None
@@ -734,7 +708,7 @@ def bulk_decision(
     db.commit()
 
     return {
-        "message": f"Bulk decision complete",
+        "message": "Bulk decision complete",
         "shortlisted": len(shortlisted),
         "rejected": len(rejected),
         "threshold_used": min_score,
@@ -750,17 +724,8 @@ def download_pipeline_results(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user),
 ):
-    """
-    Generates zip file:
-    ├── shortlisted/ (score-ordered PDFs)
-    ├── maybe/       (score-ordered PDFs)
-    └── pipeline_report.pdf
-    Only shortlisted + maybe resumes stored.
-    Rejected resumes not included.
-    """
     import zipfile
     import io
-    from fastapi.responses import StreamingResponse
 
     if current_user.role != "recruiter":
         raise HTTPException(status_code=403, detail="Only recruiters")
@@ -769,13 +734,11 @@ def download_pipeline_results(
     if not job or job.owner_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    # get shortlisted candidates — score ordered
     shortlisted = db.query(models.Application).filter(
         models.Application.job_id == job_id,
         models.Application.status == "shortlisted"
     ).order_by(models.Application.pipeline_score.desc().nullslast()).all()
 
-    # get maybe candidates — score ordered
     maybe = db.query(models.Application).filter(
         models.Application.job_id == job_id,
         models.Application.status == "maybe"
@@ -787,7 +750,6 @@ def download_pipeline_results(
             detail="No shortlisted or maybe candidates found. Run pipeline and make decisions first."
         )
 
-    # build report content before streaming
     report_lines = [
         "HIREFLOW PIPELINE REPORT",
         "========================",
@@ -798,7 +760,7 @@ def download_pipeline_results(
         "SUMMARY",
         "-------",
         f"Shortlisted: {len(shortlisted)}",
-        f"Maybe: {len(maybe)}",
+        f"Maybe: {len(maybe)} (no emails sent automatically — recruiter decision required)",
         "",
         "SHORTLISTED CANDIDATES",
         "----------------------",
@@ -815,17 +777,8 @@ def download_pipeline_results(
         skills = ", ".join(p.get("skills", [])[:5])
         report_lines.append(f"{idx}. {name} — Score: {score}/100")
         report_lines.append(f"   Skills: {skills}")
-        if app.pipeline_result:
-            try:
-                pr = json.loads(app.pipeline_result)
-                qs = pr.get("interview_questions", [])
-                if qs:
-                    report_lines.append("   Interview Questions:")
-                    for q in qs[:5]:
-                        report_lines.append(f"   • {q}")
-            except Exception:
-                pass
         report_lines.append("")
+
     report_lines += ["MAYBE CANDIDATES", "----------------"]
     for idx, app in enumerate(maybe, 1):
         p = {}
@@ -837,15 +790,18 @@ def download_pipeline_results(
         name = p.get("name", f"Candidate {app.id}")
         score = app.pipeline_score or app.ats_score or 0
         report_lines.append(f"{idx}. {name} — Score: {score}/100")
+
     report_content = "\n".join(report_lines)
 
-    # stream zip directly instead of building in memory
+    # Fix 10: track skipped resumes and report them
+    skipped_resumes = []
+
     def generate_zip():
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-
             for idx, app in enumerate(shortlisted, 1):
                 if not app.resume_path or not os.path.exists(app.resume_path):
+                    skipped_resumes.append(app.id)
                     continue
                 parsed = {}
                 if app.parsed_resume:
@@ -859,6 +815,7 @@ def download_pipeline_results(
 
             for idx, app in enumerate(maybe, 1):
                 if not app.resume_path or not os.path.exists(app.resume_path):
+                    skipped_resumes.append(app.id)
                     continue
                 parsed = {}
                 if app.parsed_resume:
@@ -870,7 +827,13 @@ def download_pipeline_results(
                 score = app.pipeline_score or app.ats_score or 0
                 zf.write(app.resume_path, f"maybe/{idx:02d}_{name}_{score}.pdf")
 
-            zf.writestr("pipeline_report.txt", report_content)
+            # Fix 10: add skipped note to report
+            if skipped_resumes:
+                report_content_final = report_content + f"\n\nSKIPPED (resume file missing): application IDs {skipped_resumes}"
+            else:
+                report_content_final = report_content
+
+            zf.writestr("pipeline_report.txt", report_content_final)
 
         buffer.seek(0)
         yield buffer.read()
@@ -912,13 +875,6 @@ def schedule_interview(
             detail="Can only schedule interviews for shortlisted candidates"
         )
 
-    # parse request body
-    from pydantic import BaseModel
-    from typing import Optional
-    from datetime import datetime as dt
-
-    # Stub endpoint — request body parsing and confirmation only
-    # Actual scheduling is handled by the /schedule action endpoint below
     return {
         "message": "To schedule interview, POST to /{job_id}/candidates/{application_id}/schedule",
         "required_fields": ["scheduled_date", "scheduled_time", "duration_minutes", "format", "meet_link"]
@@ -955,7 +911,6 @@ async def schedule_interview_action(
             detail="Can only schedule interviews for shortlisted candidates"
         )
 
-    # parse date + time
     try:
         scheduled_datetime = datetime.strptime(
             f"{data['scheduled_date']} {data['scheduled_time']}",
@@ -964,7 +919,6 @@ async def schedule_interview_action(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid date/time format. Use YYYY-MM-DD and HH:MM")
 
-    # create interview record
     interview = models.Interview(
         application_id=application_id,
         job_id=job_id,
@@ -978,13 +932,10 @@ async def schedule_interview_action(
         status="scheduled"
     )
     db.add(interview)
-
-    # update application status
     application.status = "interview_scheduled"
     db.commit()
     db.refresh(interview)
 
-    # get candidate info
     candidate = db.query(models.User).filter(
         models.User.id == application.candidate_id
     ).first()
@@ -1002,7 +953,6 @@ async def schedule_interview_action(
 
     from app.email_service import send_interview_email, create_notification
 
-    # in-app notification
     create_notification(
         user_id=application.candidate_id,
         type="interview_scheduled",
@@ -1013,7 +963,6 @@ async def schedule_interview_action(
         related_application_id=application_id
     )
 
-    # send email
     if candidate and candidate.email:
         send_interview_email(
             candidate_email=candidate.email,
@@ -1056,7 +1005,6 @@ async def reschedule_interview(
     if not job or job.owner_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    # find existing interview
     interview = db.query(models.Interview).filter(
         models.Interview.application_id == application_id,
         models.Interview.job_id == job_id
@@ -1065,7 +1013,6 @@ async def reschedule_interview(
     if not interview:
         raise HTTPException(status_code=404, detail="No interview found to reschedule")
 
-    # update interview
     try:
         new_datetime = datetime.strptime(
             f"{data['scheduled_date']} {data['scheduled_time']}",
@@ -1081,17 +1028,12 @@ async def reschedule_interview(
     interview.updated_at = datetime.utcnow()
     db.commit()
 
-    # get candidate
-    application = db.query(models.Application).filter(
-        models.Application.id == application_id
-    ).first()
     candidate = db.query(models.User).filter(
         models.User.id == interview.candidate_id
     ).first()
 
     from app.email_service import send_interview_rescheduled_email, create_notification
 
-    # notification
     create_notification(
         user_id=interview.candidate_id,
         type="interview_rescheduled",
@@ -1102,7 +1044,6 @@ async def reschedule_interview(
         related_application_id=application_id
     )
 
-    # email
     if candidate:
         send_interview_rescheduled_email(
             candidate_email=candidate.email,

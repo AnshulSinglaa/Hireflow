@@ -376,17 +376,18 @@ export default function ApplicationsTable() {
                         <td><StatusBadge status={app.status} /></td>
                         <td style={{ color: '#94A3B8', fontSize: 12 }}>{timeAgo(app.created_at)}</td>
                         <td>
-                          {app.status === 'rejected' || app.status === 'ats_failed' ? (
-                            <button className="view-btn" onClick={() => navigate(`/recruiter/jobs/${jobId}/candidates/${app.application_id}/feedback`)}>
-                              View Feedback
-                            </button>
-                          ) : app.status === 'shortlisted' || app.status === 'interview_scheduled' ? (
-                            <button className="view-btn" onClick={() => navigate(`/interview/${app.application_id}`)}>
-                              View / Schedule
-                            </button>
+                          {app.status === 'shortlisted' || app.status === 'interview_scheduled' ? (
+                            <div style={{ display: 'flex', gap: 6 }}>
+                              <button className="view-btn" onClick={() => navigate(`/recruiter/jobs/${jobId}/candidates/${app.application_id}/feedback`)}>
+                                View Feedback
+                              </button>
+                              <button className="view-btn" onClick={() => navigate(`/recruiter/jobs/${jobId}/candidates/${app.application_id}/schedule`)}>
+                                {app.status === 'interview_scheduled' ? 'Reschedule' : 'Schedule'}
+                              </button>
+                            </div>
                           ) : (
                             <button className="view-btn" onClick={() => navigate(`/recruiter/jobs/${jobId}/candidates/${app.application_id}/feedback`)}>
-                              View Details
+                              View Feedback
                             </button>
                           )}
                         </td>

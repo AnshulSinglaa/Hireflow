@@ -1,6 +1,6 @@
 import json
 import numpy as np
-from sentence_transformers import SentenceTransformer
+from fastembed import TextEmbedding
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app import models
@@ -15,25 +15,28 @@ _model = None
 
 def _get_model():
     """Lazy-load the embedding model on first use, not at import time.
-    Keeps startup memory low (important on memory-capped deploys)."""
+    Uses fastembed (ONNX runtime, no PyTorch) — far lighter and faster to
+    import than sentence-transformers, important on memory/CPU-capped deploys.
+    BAAI/bge-small-en-v1.5 outputs 384-dim vectors, same as the previous
+    all-MiniLM-L6-v2 model, so existing stored embeddings stay compatible."""
     global _model
     if _model is None:
-        _model = SentenceTransformer("all-MiniLM-L6-v2")
+        _model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
     return _model
 
 def get_embedding(text_input: str) -> list:
     """Synchronous version — use in non-async contexts"""
-    return _get_model().encode(text_input).tolist()
+    return list(_get_model().embed([text_input]))[0].tolist()
 
 async def get_embedding_async(text_input: str) -> list:
     """
-    Async version — runs sentence-transformers in thread pool
+    Async version — runs fastembed in thread pool
     so it doesn't block FastAPI event loop
     """
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         _executor,
-        lambda: _get_model().encode(text_input).tolist()
+        lambda: list(_get_model().embed([text_input]))[0].tolist()
     )
 
 def _cosine_similarity(a: list, b: list) -> float:
